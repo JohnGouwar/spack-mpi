@@ -1,0 +1,24 @@
+spack:
+  config:
+    extensions:
+      - ../
+  packages:
+    gcc:
+      buildable: false
+  specs:
+  - 'python@3.12:'
+  - py-mpi4py
+  - mpich
+  - 'gcc@11:'
+  - py-pip
+  - py-posixmq
+  view: true
+  concretizer:
+    unify: true
+  env_vars:
+    set:
+      SPACK_PYTHON: $env/.spack-env/view/bin/python3
+
+  repos:
+    extensions:
+      git: "https://github.com/JohnGouwar/spack-extension-packages.git"

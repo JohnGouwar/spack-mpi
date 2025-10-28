@@ -1,0 +1,90 @@
+#+TITLE: spack-mpi: Distributed builds over MPI
+#+AUTHOR: John Gouwar
+*/Disclaimer:/* This is a work in progress and not ready for production use
+* Why do this?
+Despite having access to thousands of cores, parallel compilation of C and C++
+code on most clusters is limited to what can fit on a single node, due to
+constraints about use of local filesystems. A naive approach would be to just
+use the shared filesystem; however, this would certainly DDOS the file servers,
+since the general load of compilation is many reads and writes of small
+files. [[https:www.distcc.org][distcc]], provides a shared nothing approach that is very amenable to
+MPI. Providing something like ~distcc~ over MPI is a first goal, but potentially
+using the power of MPI to implement more efficient file communication
+prodcedures could certainly be a stretch goal.
+
+* Pre-requisites
+- Python>=3.13 (this may work on older Python versions, but is developed on 3.13)
+- A working Spack>=1.0 installation
+- My [[https://www.github.com/JohnGouwar/spack-extension-packages][spack-extension-packages]] repo that provides a few of the packages necessary
+  for working with this extension
+- An implementaion of MPI>=1.0 and a compatible build of the ~mpi4py~ package.
+- GCC>=11 
+
+The following Spack environment will provide all necessary prequisites:
+#+begin_src yaml :tangle env/spack.yaml
+spack:
+  config:
+    extensions:
+      - ../
+  packages:
+    gcc:
+      buildable: false
+  specs:
+  - 'python@3.12:'
+  - py-mpi4py
+  - mpich
+  - 'gcc@11:'
+  - py-pip
+  - py-posixmq
+  view: true
+  concretizer:
+    unify: true
+  env_vars:
+    set:
+      SPACK_PYTHON: $env/.spack-env/view/bin/python3
+
+  repos:
+    extensions:
+      git: "https://github.com/JohnGouwar/spack-extension-packages.git"
+#+end_src
+
+* clustcc Usage
+
+** Head rank
+
+#+begin_example
+spack clustcc head SPECS
+#+end_example
+
+This will launch the head rank that will drive the compilation of each package
+necessary to install specs. See [[file:mpi/head_rank.py]] for more details on
+how it works.
+
+** Worker rank
+
+#+begin_example
+spack clustcc worker
+#+end_example
+
+This will launch the worker rank that listens for compilation tasks from the
+head rank. see [[file:mpi/worker_rank.py]] for more details on how it works.
+
+** MPI launch
+
+A sample launch with 8 ranks:
+#+begin_example
+mpiexec -np 1 spack clustcc head : mpiexec -np 7 worker
+#+end_example
+
+A potential Slurm launch with heterogenous resources:
+#+begin_src sh
+  #SBATCH --ntasks=(N-1)+K
+  #SBATCH --cpus-per-task=1
+  #SBATCH --cpu-bind=cores
+  srun --ntasks=1 --cpus-per-task=K spack clustcc head : \
+       --ntasks=N-1 --cpus-per-task=1 spack clus
+#+end_src
+
+# Local Variables:
+# eval: (add-hook 'after-save-hook 'john/org-tangle-with-prompt nil t)
+# End:

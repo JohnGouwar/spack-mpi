@@ -1,15 +1,15 @@
 from spack.spec import Spec
 from spack.concretize import concretize_together, SpecPairInput
 from typing import Optional
+
+
 def _swap_in_spec(
-        old_spec: Spec,
-        mapping: dict[str, Spec],
-        cache : Optional[dict[Spec, Spec]]= None
+    old_spec: Spec, mapping: dict[str, Spec], cache: Optional[dict[Spec, Spec]] = None
 ):
-    '''
+    """
     Update the dependencies of `old_spec` by `mapping`. If provided cache is
     non-null, the swap is done transitively
-    '''
+    """
     if cache and old_spec in cache:
         return cache[old_spec]
     swapped_spec = old_spec.copy(deps=False)
@@ -17,10 +17,13 @@ def _swap_in_spec(
     for edge in old_spec.edges_to_dependencies():
         if edge.spec.name in mapping:
             spec_to_inject = mapping[edge.spec.name]
+            # ensures that the injected spec has the same name as the spec it's
+            # replacing, but will still find the correct package
+            p = spec_to_inject.package
+            spec_to_inject.name = edge.spec.name
+            spec_to_inject._package = p
             swapped_spec.add_dependency_edge(
-                spec_to_inject,
-                depflag=edge.depflag,
-                virtuals=edge.virtuals
+                spec_to_inject, depflag=edge.depflag, virtuals=edge.virtuals
             )
         else:
             if cache is not None:
@@ -28,9 +31,7 @@ def _swap_in_spec(
             else:
                 swapped_dep = edge.spec
             swapped_spec.add_dependency_edge(
-                swapped_dep,
-                depflag=edge.depflag,
-                virtuals=edge.virtuals
+                swapped_dep, depflag=edge.depflag, virtuals=edge.virtuals
             )
     if cache is not None:
         cache[old_spec] = swapped_spec
@@ -38,20 +39,22 @@ def _swap_in_spec(
 
 
 def concretize_with_clustcc(specs: list[Spec]) -> list[Spec]:
-    '''
+    """
     Swap in the standard compiler wrapper for a clustcc variant
-    '''
-    to_concretize : list[SpecPairInput]= [(s, None) for s in specs]
+    """
+    to_concretize: list[SpecPairInput] = [(s, None) for s in specs]
     to_concretize.append((Spec("clustcc-compiler-wrapper"), None))
     concretized_all = concretize_together(to_concretize)
     concretized = []
     clustcc_wrapper = None
-    for (user, concr) in concretized_all:
+    for user, concr in concretized_all:
         if user.name == "clustcc-compiler-wrapper":
             clustcc_wrapper = concr
         else:
             concretized.append(concr)
-    assert clustcc_wrapper is not None, "clustcc-compiler-wrapper should be among compiled specs"
+    assert clustcc_wrapper is not None, (
+        "clustcc-compiler-wrapper should be among compiled specs"
+    )
     mapping = {"compiler-wrapper": clustcc_wrapper}
     new_specs = []
     cache = {}

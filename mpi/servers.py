@@ -1,57 +1,75 @@
-from multiprocessing import connection
-from subprocess import run, PIPE
-from multiprocessing.connection import Connection
-from PosixMQ import PosixMQ
-from spack.package_base import PackageBase
-from spack.installer import PackageInstaller
-from dataclasses import dataclass
+import logging
+from multiprocessing.queues import Queue
+from subprocess import CompletedProcess, run, PIPE
+from concurrent.futures import ProcessPoolExecutor
+# TODO: Make modular import
+try:
+    from spack.extensions.mpi.task import (
+        LocalCompilerTask,
+        LocalPreprocessorTask,
+        RemoteCompilerTask,
+        parse_task_from_message,
+        refine_compiler_task,
+    )
+    from spack.extensions.mpi.constants import HEAD_NODE_LOGGER_NAME
+except:
+    from task import (
+        LocalCompilerTask,
+        LocalPreprocessorTask,
+        RemoteCompilerTask,
+        parse_task_from_message,
+        refine_compiler_task,
+    )
+    from constants import HEAD_NODE_LOGGER_NAME
 
-@dataclass
-class CompilerTask:
-    mode: str
-    output_fifo: str
-    cmd: list[str]
+logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
 
-def subprocess_server(pipe: Connection):
-    '''
-    MPI code cannot fork exec directly, forking this before calling MPI_Init
-    allows it to work over IPC
-    '''
-    while True:
-        args = pipe.recv()
-        if args is None:
-            return
-        res = run(args, stdout=PIPE, stderr=PIPE)
-        pipe.send(res)
+def run_local_compiler_task(task: LocalCompilerTask):
+    res = run(
+        task.cmd,
+        stdout=PIPE,
+        stderr=PIPE,
+        cwd=task.working_dir,
+    )
+    with open(task.output_fifo, "ab") as f:
+        f.write(res.returncode.to_bytes())
+        if len(res.stdout) > 0:
+            f.write(res.stdout)
+        elif len(res.stderr) > 0:
+            f.write(res.stderr)
 
-def listener_server(
-        mq_name: str,
-        task_queue_writer: Connection
+
+def run_local_preprocessor_task(
+    task: LocalPreprocessorTask, local_task_queue: Queue, remote_task_queue: Queue
 ):
-    def _parse_task(task_str: str):
-        mode, output_fifo, *cmd = task_str.split(";")
-        return CompilerTask(mode, output_fifo, cmd)
-    mq = PosixMQ.create(mq_name)
-    try:
-        while True:
-            task_str = mq.recv()
-            if task_str == "Done":
-                return
-            task = _parse_task(task_str)
-            task_queue_writer.send(task)
-    finally:
-        task_queue_writer.close()
-        mq.unlink()
-        
-def installer(
-        mq_name: str,
-        packages: list[PackageBase]
+    """
+    Mocking where everything is local
+    """
+    local_task_queue.put(
+        LocalCompilerTask(task.working_dir, task.output_fifo, task.orig_cmd)
+    )
+    return
+
+
+def task_server(
+    local_task_queue: Queue, remote_task_queue: Queue, concurrent_tasks: int
 ):
     try:
-        PackageInstaller(packages).install()
-    except Exception as e:
-        raise e
-    finally:
-        mq = PosixMQ.open(mq_name)
-        mq.send("Done", 2)
-        mq.close()
+        with ProcessPoolExecutor(int(concurrent_tasks)) as executor:
+            while True:
+                task = local_task_queue.get()
+                if isinstance(task, LocalCompilerTask):
+                    logger.debug(f"Running local compiler task: {task}")
+                    executor.submit(run_local_compiler_task, task)
+                elif isinstance(task, LocalPreprocessorTask):
+                    logger.debug(f"Running local preprocessing task: {task}")
+                    executor.submit(
+                        run_local_preprocessor_task,
+                        task,
+                        local_task_queue,
+                        remote_task_queue,
+                    )
+                else:
+                    raise Exception(f"Unrecognized task: {task}")
+    except EOFError:
+        return

@@ -6,7 +6,8 @@ spack:
     gcc:
       buildable: false
   specs:
-  - 'python@3.12:'
+  - 'python@:3.13'
+  - clingo@spack
   - py-mpi4py
   - mpich
   - 'gcc@11:'
@@ -20,5 +21,4 @@ spack:
       SPACK_PYTHON: $env/.spack-env/view/bin/python3
 
   repos:
-    extensions:
-      git: "https://github.com/JohnGouwar/spack-extension-packages.git"
+    extensions: /home/jgouwar/git/llnl/spack-extension-packages/spack_repo/extensions

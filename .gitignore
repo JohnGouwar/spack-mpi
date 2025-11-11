@@ -3,3 +3,5 @@ spack.lock
 __pycache__
 *.spec.json
 pyrightconfig.json
+*.log
+example_logs

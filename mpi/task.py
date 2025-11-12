@@ -3,7 +3,7 @@ from typing import Optional
 
 try:
     from spack.extensions.mpi.constants import MSG_SEP
-except:
+except ImportError:
     from constants import MSG_SEP
 
 
@@ -57,4 +57,10 @@ def parse_task_from_message(msg: str) -> RawCompilerTask:
 def refine_compiler_task(
     task: RawCompilerTask,
 ) -> LocalCompilerTask | LocalPreprocessorTask:
+    if task.mode == "cc":
+        return LocalPreprocessorTask(
+            working_dir=task.working_dir,
+            output_fifo=task.output_fifo,
+            orig_cmd=task.cmd,
+        )
     return LocalCompilerTask(task.working_dir, task.output_fifo, task.cmd)

@@ -1,23 +1,21 @@
+from multiprocessing import Pipe, Process
+from multiprocessing.connection import Connection
+from pathlib import Path
+from subprocess import PIPE, CompletedProcess, run
+from typing import Optional
+
 import mpi4py
 
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
-from mpi4py import MPI
-
-from subprocess import run, CompletedProcess
-from multiprocessing.connection import Connection
-from multiprocessing import Process, Pipe
-from argparse import Namespace
-from typing import Optional
-from subprocess import PIPE
-from pathlib import Path
+from mpi4py import MPI  # noqa: E402
 
 try:
-    from spack.extensions.mpi.task import RemoteCompilerTask, RemoteCompilerResponse
     from spack.extensions.mpi.constants import HEAD_RANK_ID
-except:
-    from task import RemoteCompilerTask, RemoteCompilerResponse
+    from spack.extensions.mpi.task import RemoteCompilerResponse, RemoteCompilerTask
+except ImportError:
     from constants import HEAD_RANK_ID
+    from task import RemoteCompilerResponse, RemoteCompilerTask
 
 
 class ForkServer:

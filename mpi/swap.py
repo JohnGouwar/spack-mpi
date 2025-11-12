@@ -1,6 +1,7 @@
-from spack.spec import Spec
-from spack.concretize import concretize_together, SpecPairInput
 from typing import Optional
+
+from spack.concretize import SpecPairInput, concretize_together
+from spack.spec import Spec
 
 
 def _swap_in_spec(

@@ -55,15 +55,16 @@ except ImportError:
 # Because of the quirks of ProcessPoolExecutor, sharing queues is very tricky
 # The workaround here is to make the queues global variables and then initialize
 # them when the task server spawns the initial tasks. This is ugly, but the only
-# way to get it to work
+# way to get it to work. The other option is to use multiprocessing.Manager, which
+# accomplishes this by adding another layer of process indirection and will definitely
+# limit throughput
 global_local_task_queue = None
 global_remote_task_queue = None
-global_logging_queue = None
 def task_server_initializer(local_queue, remote_queue, logging_queue):
-    global global_local_task_queue, global_remote_task_queue, global_logging_queue
+    global global_local_task_queue, global_remote_task_queue
     global_local_task_queue = local_queue
     global_remote_task_queue = remote_queue
-    global_logging_queue = logging_queue
+    attach_queue_to_logger(logging_queue)
     
 
 def run_local_compiler_task(task: LocalCompilerTask):
@@ -90,8 +91,6 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
     global global_local_task_queue, global_remote_task_queue, global_logging_queue
     assert global_local_task_queue is not None
     assert global_remote_task_queue is not None
-    assert global_logging_queue is not None
-    attach_queue_to_logger(global_logging_queue)
     logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
     LOCAL_FALLBACK = LocalCompilerTask(
         task.working_dir, task.output_fifo, task.orig_cmd
@@ -99,6 +98,12 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
     try:
         parsed_command = parse_compile_command_list(task.orig_cmd)
         logger.debug(f"Parsed compile command {task.orig_cmd} as {parsed_command}")
+        if Path(parsed_command.source_file).name == "conftest.c":
+            logger.debug(
+                f"Sending likely smoke-test {parsed_command.source_file} to the local queue"
+            )
+            global_local_task_queue.put(LOCAL_FALLBACK)
+            return
         new_command = list(task.orig_cmd)
         with NamedTemporaryFile("w", delete_on_close=False) as tf:
             tf.close()
@@ -107,7 +112,7 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
             else:
                 new_command.extend(["-o", tf.name])
             new_command = (
-                [new_command[0]] + ["-E", "--fdirectives-only"] + new_command[1:]
+                [new_command[0]] + ["-E", "-fdirectives-only", "-P", "-C"] + new_command[1:]
             )
             logger.debug(f"Running {new_command}")
             res = run(new_command, stdout=PIPE, stderr=PIPE, cwd=task.working_dir)
@@ -123,13 +128,15 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
                         orig_cmd=task.orig_cmd,
                     )
                 )
+                return
             else:
                 logger.debug(f"Preprocessing failed for: {task.orig_cmd}, got res: {res}")
                 global_local_task_queue.put(LOCAL_FALLBACK)
+                return
     except Exception as e:
         logger.debug(f"Exception in preprocessor task: {e}")
         global_local_task_queue.put(LOCAL_FALLBACK)
-
+        return
 
 class HeadRankTaskServer:
     """
@@ -281,7 +288,7 @@ class MpiHeadRank:
 
     @staticmethod
     def _rank_from_index(index):
-        return index // 2
+        return (index // 2) + 1
 
     def __init__(self, task_server: HeadRankTaskServer):
         """
@@ -295,30 +302,47 @@ class MpiHeadRank:
         self.world_size = self.world_comm.Get_size()
         self.requests = [MPI.REQUEST_NULL for _ in range(2, 2 * self.world_size)]
         self.task_server = task_server
+        self.logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
 
     def _send_task_to_rank(self, dest_rank: int, task: RemoteCompilerTask):
         send_req = self.world_comm.isend(task, dest=dest_rank)
         recv_req = self.world_comm.irecv(source=dest_rank)
         send_index, recv_index = MpiHeadRank._get_request_indices(dest_rank)
+        self.logger.debug(f"Sending {task.orig_cmd} to rank {dest_rank}")
         self.requests[send_index] = send_req
         self.requests[recv_index] = recv_req
 
-    def _handle_resp(self, resp: RemoteCompilerResponse):
-        if resp.rc == 0:
+    def _handle_resp(self, rank: int, resp: RemoteCompilerResponse):
+        if resp.rc is None:
+            assert resp.cmd is not None, (
+                "Failed calls should return command for local retry"
+            )
+            self.logger.debug(f"Running the command: {resp.cmd} did not fork on the worker")
+            self.task_server.enqueue_local(
+                LocalCompilerTask(resp.working_dir, resp.output_fifo, resp.cmd)
+            )
+        elif resp.rc == 0:
+            self.logger.debug(f"Received positive response from: {rank}")
             assert resp.output_filename is not None, "Must have output filename"
             assert resp.output_bytes is not None, "Must have object bytes"
-            with open(resp.output_filename, "wb") as f:
+            if Path(resp.output_filename).is_absolute():
+                output_path = resp.output_filename
+            else:
+                output_path = Path(resp.working_dir) / resp.output_filename
+            with open(output_path, "wb") as f:
                 f.write(resp.output_bytes)
             with open(resp.output_fifo, "wb") as f:
                 f.write(resp.rc.to_bytes())
                 if resp.stdout:
                     f.write(resp.stdout)
         else:
-            # TODO: Log failure and retry locally
             assert resp.cmd is not None, (
                 "Failed calls should return command for local retry"
             )
-
+            self.logger.debug(
+                f"Running the command: {resp.cmd} remotely returned a non-zero "
+                "error code, retrying locally"
+            )
             self.task_server.enqueue_local(
                 LocalCompilerTask(resp.working_dir, resp.output_fifo, resp.cmd)
             )
@@ -334,6 +358,8 @@ class MpiHeadRank:
                 while len(idle_workers) > 0:
                     try:
                         task = self.task_server.dequeue_remote()
+                        if task is None:
+                            return
                         worker_rank = idle_workers.popleft()
                         self._send_task_to_rank(worker_rank, task)
                     except Empty:
@@ -347,7 +373,7 @@ class MpiHeadRank:
                             i
                         ):  # do nothing on send indices
                             rank = MpiHeadRank._rank_from_index(i)
-                            self._handle_resp(resp)
+                            self._handle_resp(rank, resp)
                             try:
                                 task = self.task_server.dequeue_remote()
                                 self._send_task_to_rank(rank, task)
@@ -361,7 +387,8 @@ class MpiHeadRank:
         except EOFError:
             # When we run out of tasks, make sure to complete the ones that are still outstanding
             resps = MPI.Request.waitall(self.requests)
-            for resp in resps:
+            for i, resp in enumerate(resps):
                 if resp:
-                    self._handle_resp(resp)
+                    rank = self._rank_from_index(i)
+                    self._handle_resp(rank, resp)
             return

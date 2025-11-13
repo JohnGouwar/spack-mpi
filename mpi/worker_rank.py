@@ -59,7 +59,12 @@ def normalize_cmd_args(args: list[str]) -> tuple[str, str, str, list[str]]:
             original_output_filename = args[i + 1]
             output_filename = Path(original_output_filename).name
             normalized_args[i + 1] = output_filename
-    if input_filename and output_filename and original_output_filename:
+    if output_filename is None:
+        original_output_filename = "a.out"
+        output_filename = "a.out"
+    if input_filename:
+        assert output_filename is not None
+        assert original_output_filename is not None
         return (
             input_filename,
             original_output_filename,
@@ -79,23 +84,35 @@ class MpiWorkerRank:
         (infile, orig_outfile, outfile, norm_args) = normalize_cmd_args(task.orig_cmd)
         with open(infile, "w") as f:
             f.write(task.input_file_text)
-        res = self.fork_server.spawn(norm_args, stdin=PIPE, stdout=PIPE)
-        if res.returncode == 0:
-            with open(outfile, "rb") as f:
-                output_bytes = f.read()
-        else:
-            output_bytes = None
-        resp = RemoteCompilerResponse(
-            rc=res.returncode,
-            output_fifo=task.output_fifo,
-            working_dir=task.working_dir,
-            stdout=res.stdout if len(res.stdout) > 0 else None,
-            stderr=res.stderr if len(res.stdout) > 0 else None,
-            output_bytes=output_bytes,
-            output_filename=orig_outfile,
-            cmd=None if res.returncode == 0 else task.orig_cmd,
-        )
-        return resp
+        try:
+            res = self.fork_server.spawn(norm_args, stderr=PIPE, stdout=PIPE)
+            if res.returncode == 0:
+                with open(outfile, "rb") as f:
+                    output_bytes = f.read()
+            else:
+                output_bytes = None
+            return RemoteCompilerResponse(
+                    rc=res.returncode,
+                    output_fifo=task.output_fifo,
+                    working_dir=task.working_dir,
+                    stdout=res.stdout if len(res.stdout) > 0 else None,
+                    stderr=res.stderr if len(res.stdout) > 0 else None,
+                    output_bytes=output_bytes,
+                    output_filename=orig_outfile,
+                    cmd=None if res.returncode == 0 else task.orig_cmd,
+                )
+        except:
+            return RemoteCompilerResponse(
+                rc=None,
+                output_fifo=task.output_fifo,
+                working_dir=task.working_dir,
+                stdout=None,
+                stderr=None,
+                output_bytes=None,
+                output_filename=None,
+                cmd=task.orig_cmd
+            )
+            
 
     def run(self):
         world_comm = MPI.COMM_WORLD.Dup()
@@ -106,4 +123,5 @@ class MpiWorkerRank:
             if remote_cc_task is None:
                 return
             resp = self.handle_cc_args(remote_cc_task)
+            
             world_comm.send(resp, dest=HEAD_RANK_ID)

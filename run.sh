@@ -1,5 +1,6 @@
 #!/bin/bash
 TEST_SPEC=zlib
+LOG_FILE=head_node.log
 if [ ! -f $TEST_SPEC.spec.json ]
 then
     echo "Concretizing $TEST_SPEC"
@@ -22,7 +23,12 @@ then
     echo "Reactivating"
     spack env activate env/
 fi
-mpirun -np 1 spack clustcc head \
+if [ ! -z $LOG_FILE ]
+then
+    echo "Removing $LOG_FILE"
+    rm -f $LOG_FILE
+fi
+mpirun -np 1 spack -d clustcc head \
        --spec-json $TEST_SPEC.spec.json \
        --clustcc-spec-json clustcc.spec.json \
        --local-concurrent-tasks 3 : -np 3 spack clustcc worker

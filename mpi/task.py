@@ -39,7 +39,7 @@ class RemoteCompilerTask:
 
 @dataclass
 class RemoteCompilerResponse:
-    rc: int  # return code
+    rc: Optional[int]  # return code, none means subprocess didn't even launch
     working_dir: str  # working dir this task was initiated from
     output_fifo: str  # fifo that is masquerading the call
     stdout: Optional[bytes]  # potential stdout of remote process

@@ -25,8 +25,8 @@ then
 fi
 if [ ! -z $LOG_FILE ]
 then
-    echo "Removing $LOG_FILE"
-    rm -f $LOG_FILE
+    echo "Removing log files"
+    rm -f *.log
 fi
 mpirun -np 1 spack clustcc head \
        --spec-json $TEST_SPEC.spec.json \

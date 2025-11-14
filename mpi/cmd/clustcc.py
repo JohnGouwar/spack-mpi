@@ -66,7 +66,6 @@ def clustcc(parser, args):
             if MPI.Is_initialized():
                 MPI.Finalize()
     elif args.subcommand == "worker":
-        # TODO: Setup worker logging
         forkserver = ForkServer()
         try:
             MPI.Init()

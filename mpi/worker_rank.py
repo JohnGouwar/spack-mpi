@@ -1,3 +1,4 @@
+import logging
 import os
 from multiprocessing import Pipe, Process
 from multiprocessing.connection import Connection
@@ -47,7 +48,7 @@ class ForkServer:
         return self.parent_pipe.recv()
 
 
-def normalize_cmd_args(args: list[str]) -> tuple[str, str, str, list[str]]:
+def normalize_cmd_args(args: list[str], td: str) -> tuple[str, str, str, list[str]]:
     input_filename = None
     output_filename = None
     original_output_filename = None
@@ -55,10 +56,10 @@ def normalize_cmd_args(args: list[str]) -> tuple[str, str, str, list[str]]:
     for i, arg in enumerate(args):
         if arg.endswith(".c") or arg.endswith(".cc") or arg.endswith(".cpp"):
             input_filename = Path(arg).name
-            normalized_args[i] = input_filename
+            normalized_args[i] = os.path.join(td, input_filename)
         elif arg == "-o":
             original_output_filename = args[i + 1]
-            output_filename = Path(original_output_filename).name
+            output_filename = str(Path(td) / Path(original_output_filename).name)
             normalized_args[i + 1] = output_filename
     if output_filename is None:
         original_output_filename = "a.out"
@@ -81,15 +82,22 @@ class MpiWorkerRank:
         assert MPI.Is_initialized()
         self.world_comm = MPI.COMM_WORLD.Dup()
         self.fork_server = forkserver
+        logging.basicConfig(
+            filename=f"worker_{self.world_comm.Get_rank()}.log",
+            filemode="w",
+            format="%(asctime)s - %(message)s",
+            level=logging.DEBUG
+        )
 
     def handle_cc_args(
-        self, task: RemoteCompilerTask
+            self, task: RemoteCompilerTask, td: str
     ) -> tuple[RemoteCompilerResponse, Optional[bytes]]:
-        (infile, orig_outfile, outfile, norm_args) = normalize_cmd_args(task.orig_cmd)
-        with open(infile, "w") as f:
-            f.write(task.input_file_text)
         try:
+            (infile, orig_outfile, outfile, norm_args) = normalize_cmd_args(task.orig_cmd, td)
+            with open(infile, "w") as f:
+                f.write(task.input_file_text)
             res = self.fork_server.spawn(norm_args, stderr=PIPE, stdout=PIPE)
+            logging.debug(f"Running {norm_args}, got {res}")
             if res.returncode == 0:
                 with open(outfile, "rb") as f:
                     output_bytes = f.read()
@@ -105,7 +113,8 @@ class MpiWorkerRank:
                 output_filename=orig_outfile,
                 cmd=None if res.returncode == 0 else task.orig_cmd,
             ), output_bytes
-        except:
+        except Exception as e:
+            logging.debug(f"handle_cc_args for {task.orig_cmd} failed with {e}")
             return RemoteCompilerResponse(
                 rc=None,
                 output_fifo=task.output_fifo,
@@ -127,7 +136,8 @@ class MpiWorkerRank:
                 )
                 if remote_cc_task is None:
                     return
-                (resp, object_bytes) = self.handle_cc_args(remote_cc_task)
+                logging.debug(f"Received: {remote_cc_task.orig_cmd}")
+                (resp, object_bytes) = self.handle_cc_args(remote_cc_task, td)
                 MPI.Request.Waitall(send_reqs)
                 send_reqs[0] = self.world_comm.isend(
                     resp, dest=HEAD_RANK_ID, tag=WorkerResponseTag.RESPONSE

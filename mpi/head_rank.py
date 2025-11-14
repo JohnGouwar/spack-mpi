@@ -382,7 +382,7 @@ class MpiHeadRank:
             )
             self.logger.debug(
                 f"Running the command: {resp.cmd} remotely returned a non-zero "
-                "error code, retrying locally"
+                f"error code, retrying locally, stdout:{resp.stdout}stderr:{resp.stderr}"
             )
             self.task_server.enqueue_local(
                 LocalCompilerTask(resp.working_dir, resp.output_fifo, resp.cmd)
@@ -392,6 +392,7 @@ class MpiHeadRank:
     def _handle_bytes(self, index: int):
         buf_dict = self.obj_recv_buffers[index]
         assert buf_dict is not None
+        self.logger.debug(f"Writing {len(buf_dict['buffer'])} bytes to {buf_dict['path']}")
         with open(buf_dict["path"], "wb") as f:
             f.write(buf_dict["buffer"])
         with open(buf_dict["output_fifo"], "wb") as f:

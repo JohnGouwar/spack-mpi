@@ -1,20 +1,21 @@
+import os
 from multiprocessing import Pipe, Process
 from multiprocessing.connection import Connection
 from pathlib import Path
 from subprocess import PIPE, CompletedProcess, run
 from typing import Optional
+from tempfile import TemporaryDirectory
 
 import mpi4py
-
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
 from mpi4py import MPI  # noqa: E402
 
 try:
-    from spack.extensions.mpi.constants import HEAD_RANK_ID
+    from spack.extensions.mpi.constants import HEAD_RANK_ID, WorkerResponseTag
     from spack.extensions.mpi.task import RemoteCompilerResponse, RemoteCompilerTask
 except ImportError:
-    from constants import HEAD_RANK_ID
+    from constants import HEAD_RANK_ID, WorkerResponseTag
     from task import RemoteCompilerResponse, RemoteCompilerTask
 
 
@@ -78,9 +79,12 @@ def normalize_cmd_args(args: list[str]) -> tuple[str, str, str, list[str]]:
 class MpiWorkerRank:
     def __init__(self, forkserver: ForkServer):
         assert MPI.Is_initialized()
+        self.world_comm = MPI.COMM_WORLD.Dup()
         self.fork_server = forkserver
 
-    def handle_cc_args(self, task: RemoteCompilerTask) -> RemoteCompilerResponse:
+    def handle_cc_args(
+        self, task: RemoteCompilerTask
+    ) -> tuple[RemoteCompilerResponse, Optional[bytes]]:
         (infile, orig_outfile, outfile, norm_args) = normalize_cmd_args(task.orig_cmd)
         with open(infile, "w") as f:
             f.write(task.input_file_text)
@@ -92,15 +96,15 @@ class MpiWorkerRank:
             else:
                 output_bytes = None
             return RemoteCompilerResponse(
-                    rc=res.returncode,
-                    output_fifo=task.output_fifo,
-                    working_dir=task.working_dir,
-                    stdout=res.stdout if len(res.stdout) > 0 else None,
-                    stderr=res.stderr if len(res.stdout) > 0 else None,
-                    output_bytes=output_bytes,
-                    output_filename=orig_outfile,
-                    cmd=None if res.returncode == 0 else task.orig_cmd,
-                )
+                rc=res.returncode,
+                output_fifo=task.output_fifo,
+                working_dir=task.working_dir,
+                stdout=res.stdout if len(res.stdout) > 0 else None,
+                stderr=res.stderr if len(res.stdout) > 0 else None,
+                output_bytes=len(output_bytes) if output_bytes else None,
+                output_filename=orig_outfile,
+                cmd=None if res.returncode == 0 else task.orig_cmd,
+            ), output_bytes
         except:
             return RemoteCompilerResponse(
                 rc=None,
@@ -110,18 +114,29 @@ class MpiWorkerRank:
                 stderr=None,
                 output_bytes=None,
                 output_filename=None,
-                cmd=task.orig_cmd
-            )
-            
+                cmd=task.orig_cmd,
+            ), None
 
     def run(self):
-        world_comm = MPI.COMM_WORLD.Dup()
-        while True:
-            remote_cc_task: Optional[RemoteCompilerTask] = world_comm.recv(
-                source=HEAD_RANK_ID
-            )
-            if remote_cc_task is None:
-                return
-            resp = self.handle_cc_args(remote_cc_task)
-            
-            world_comm.send(resp, dest=HEAD_RANK_ID)
+        send_reqs = [MPI.REQUEST_NULL, MPI.REQUEST_NULL]
+        with TemporaryDirectory(dir="/tmp") as td:
+            os.chdir(td)
+            while True:
+                remote_cc_task: Optional[RemoteCompilerTask] = self.world_comm.recv(
+                    source=HEAD_RANK_ID
+                )
+                if remote_cc_task is None:
+                    return
+                (resp, object_bytes) = self.handle_cc_args(remote_cc_task)
+                MPI.Request.Waitall(send_reqs)
+                send_reqs[0] = self.world_comm.isend(
+                    resp, dest=HEAD_RANK_ID, tag=WorkerResponseTag.RESPONSE
+                )
+                if object_bytes:
+                    send_reqs[1] = self.world_comm.Isend(
+                        [object_bytes, MPI.BYTE],
+                        dest=HEAD_RANK_ID,
+                        tag=WorkerResponseTag.OBJECT_BYTES,
+                    )
+                else:
+                    send_reqs[1] = MPI.REQUEST_NULL

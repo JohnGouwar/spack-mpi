@@ -44,7 +44,7 @@ class RemoteCompilerResponse:
     output_fifo: str  # fifo that is masquerading the call
     stdout: Optional[bytes]  # potential stdout of remote process
     stderr: Optional[bytes]  # potential stderr of remote process
-    output_bytes: Optional[bytes]  # bytes of the output object file
+    output_bytes: Optional[int]  # number of bytes of the output object file
     output_filename: Optional[str]  # name of output object file
     cmd: Optional[list[str]]  # send back the command to run locally if failed
 

@@ -21,13 +21,14 @@ class LoggingProcess(Process):
     def __init__(self, log_queue: Queue, **kwargs):
         self.log_queue = log_queue
         super().__init__(**kwargs)
+
     def run(self):
         attach_queue_to_logger(self.log_queue)
         return super().run()
 
 
 @contextmanager
-def setup_logging_queue(log_name: str, log_file: Path, log_level = logging.DEBUG):
+def setup_logging_queue(log_name: str, log_file: Path, log_level=logging.DEBUG):
     """
     This sets up a multiprocessing safe logger
     """

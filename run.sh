@@ -28,7 +28,7 @@ then
     echo "Removing $LOG_FILE"
     rm -f $LOG_FILE
 fi
-mpirun -np 1 spack -d clustcc head \
+mpirun -np 1 spack clustcc head \
        --spec-json $TEST_SPEC.spec.json \
        --clustcc-spec-json clustcc.spec.json \
-       --local-concurrent-tasks 3 : -np 3 spack clustcc worker
+       --local-concurrent-tasks 3 : -np 1 spack clustcc worker

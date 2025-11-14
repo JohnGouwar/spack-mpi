@@ -44,7 +44,9 @@ def setup_parser(parser: ArgumentParser):
 def clustcc(parser, args):
     if args.subcommand == "head":
         try:
-            with setup_logging_queue(HEAD_NODE_LOGGER_NAME, Path("head_node.log")) as logging_queue:
+            with setup_logging_queue(
+                HEAD_NODE_LOGGER_NAME, Path("head_node.log")
+            ) as logging_queue:
                 spec_json_path = Path(args.spec_json) if args.spec_json else None
                 clustcc_json_path = (
                     Path(args.clustcc_spec_json) if args.clustcc_spec_json else None
@@ -64,7 +66,7 @@ def clustcc(parser, args):
             if MPI.Is_initialized():
                 MPI.Finalize()
     elif args.subcommand == "worker":
-        #TODO: Setup worker logging
+        # TODO: Setup worker logging
         forkserver = ForkServer()
         try:
             MPI.Init()

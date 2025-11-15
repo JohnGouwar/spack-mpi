@@ -149,12 +149,28 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
 
 class HeadRankTaskServer:
     """
-    Shutdown order: Installer -> Listener -> Task Server -> MpiHeadRank
+    Shutdown order: Installer -> Listener -> Task Server -> MpiHeadRank -> MpiWorkerRank
     Installer sends MQ_DONE to Listener
     Listener sends None to Task Server Local Queue
-    Task Server sends None to MpiRank
+    Task Server sends None to MpiHeadRank
+    MpiHeadRank sends None to all worker ranks
     """
 
+    @staticmethod
+    def _installer(packages: list[PackageBase]):
+        logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
+        logger.info("Starting installer")
+        try:
+            PackageInstaller(packages).install()
+        except Exception as e:
+            raise e
+        finally:
+            logger.debug(f"Installer sending {MQ_DONE} to listener")
+            mq = PosixMQ.open(MQ_NAME)
+            mq.send(MQ_DONE, 2)
+            mq.close()
+
+            
     @staticmethod
     def _listener_server(mq_name: str, local_task_queue: Queue):
         mq = PosixMQ.create(mq_name)
@@ -171,22 +187,11 @@ class HeadRankTaskServer:
                 logger.debug(f"Listener refined: {task_str} into {local_task}")
                 local_task_queue.put(local_task)
         finally:
+            logger.debug(f"Listener sending None sentinel to local_task_queue")
             local_task_queue.put(None)
             local_task_queue.close()
             mq.unlink()
 
-    @staticmethod
-    def _installer(packages: list[PackageBase]):
-        logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
-        logger.info("Starting installer")
-        try:
-            PackageInstaller(packages).install()
-        except Exception as e:
-            raise e
-        finally:
-            mq = PosixMQ.open(MQ_NAME)
-            mq.send(MQ_DONE, 2)
-            mq.close()
 
     @staticmethod
     def _task_server_loop(
@@ -206,7 +211,9 @@ class HeadRankTaskServer:
                 while True:
                     task = local_task_queue.get()
                     if task is None:  # sentinel value for no more work
+                        logger.debug(f"Task server sending sentinel None to remote_task_queue")
                         remote_task_queue.put(None)
+                        remote_task_queue.close()
                         return
                     if isinstance(task, LocalCompilerTask):
                         executor.submit(run_local_compiler_task, task)
@@ -414,6 +421,10 @@ class MpiHeadRank:
                     try:
                         task = self.task_server.dequeue_remote()
                         if task is None:
+                            self.logger.debug(
+                                "Received sentinel None in head rank clearing idle workers,"
+                                " beginning shutdown process"
+                            )
                             return
                         worker_rank = idle_workers.popleft()
                         self._send_task_to_rank(worker_rank, task)
@@ -433,6 +444,12 @@ class MpiHeadRank:
                                 self._handle_resp(rank, resp)
                                 try:
                                     task = self.task_server.dequeue_remote()
+                                    if task is None:
+                                        self.logger.debug(
+                                            "Received sentinel None in head rank,"
+                                            " beginning shutdown process"
+                                        )
+                                        return
                                     self._send_task_to_rank(rank, task)
                                 except Empty:
                                     idle_workers.append(rank)
@@ -447,10 +464,6 @@ class MpiHeadRank:
                         # did no work this iteration, take a break
                         sleep(0.1)
                 except:
-                    # We need a more sophisticated communication protocol
-                    # Worker should reply with how many bytes it intends to
-                    # send on success and then the head node should wait for
-                    # those bytes in particular
                     for i, s in enumerate(work_request_statuses):
                         status_error = MPI.Get_error_string(s.Get_error())
                         print(f"Rank {i + 1}, Work status error:{status_error}", flush=True)
@@ -459,14 +472,23 @@ class MpiHeadRank:
                         print(f"Rank {i + 1}, Obj recv status error:{status_error}", flush=True)
                         
 
-        except EOFError:
+        finally:
             # When we run out of tasks, make sure to complete the ones that are still outstanding
+            self.logger.debug("Awaiting outstanding work requests")
             resps = MPI.Request.waitall(self.work_requests)
             for i, resp in enumerate(resps):
                 if resp:
                     rank = self._rank_from_index(i)
                     self._handle_resp(rank, resp)
+            self.logger.debug("Awaiting outstanding object recvs")
             MPI.Request.Waitall(self.obj_recv_requests)
             for i, obj_buf in enumerate(self.obj_recv_buffers):
                 if obj_buf:
                     self._handle_bytes(i)
+            self.logger.debug("Sending shutdown sentinel None to workers")
+            end_communication_reqs = [
+                self.world_comm.isend(None, dest=i)
+                for i in range(1, self.nworkers+1)
+            ]
+            MPI.Request.Waitall(end_communication_reqs)
+            self.logger.debug("Head rank shutdown complete")

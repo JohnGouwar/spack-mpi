@@ -43,6 +43,9 @@ class ForkServer:
         self.server = Process(target=ForkServer.subprocess_server, args=(child_pipe,))
         self.server.start()
 
+    def shutdown(self):
+        self.parent_pipe.send(None)
+
     def spawn(self, args: list[str], **kwargs) -> CompletedProcess:
         self.parent_pipe.send((args, kwargs))
         return self.parent_pipe.recv()
@@ -135,6 +138,8 @@ class MpiWorkerRank:
                     source=HEAD_RANK_ID
                 )
                 if remote_cc_task is None:
+                    logging.debug("Received sentinel None, shutting down...")
+                    self.fork_server.shutdown()
                     return
                 logging.debug(f"Received: {remote_cc_task.orig_cmd}")
                 (resp, object_bytes) = self.handle_cc_args(remote_cc_task, td)

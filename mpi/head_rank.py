@@ -92,7 +92,7 @@ def run_local_compiler_task(task: LocalCompilerTask):
 
 
 def run_local_preprocessor_task(task: LocalPreprocessorTask):
-    global global_local_task_queue, global_remote_task_queue, global_logging_queue
+    global global_local_task_queue, global_remote_task_queue
     assert global_local_task_queue is not None
     assert global_remote_task_queue is not None
     logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
@@ -163,6 +163,7 @@ class HeadRankTaskServer:
         try:
             PackageInstaller(packages).install()
         except Exception as e:
+            logging.debug(f"Got exception {e} in installer")
             raise e
         finally:
             logger.debug(f"Installer sending {MQ_DONE} to listener")
@@ -316,7 +317,7 @@ class MpiHeadRank:
 
     @staticmethod
     def _rank_from_index(index):
-        return (index // 3) + 1
+        return (index // 2) + 1
 
     def __init__(self, task_server: HeadRankTaskServer):
         """

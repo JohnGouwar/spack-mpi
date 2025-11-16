@@ -100,11 +100,12 @@ class MpiWorkerRank:
             with open(infile, "w") as f:
                 f.write(task.input_file_text)
             res = self.fork_server.spawn(norm_args, stderr=PIPE, stdout=PIPE)
-            logging.debug(f"Running {norm_args}, got {res}")
             if res.returncode == 0:
+                logging.debug(f"Running {norm_args} succeeded")
                 with open(outfile, "rb") as f:
                     output_bytes = f.read()
             else:
+                logging.debug(f"Running {norm_args} failed, {res}")
                 output_bytes = None
             return RemoteCompilerResponse(
                 rc=res.returncode,
@@ -147,7 +148,9 @@ class MpiWorkerRank:
                 send_reqs[0] = self.world_comm.isend(
                     resp, dest=HEAD_RANK_ID, tag=WorkerResponseTag.RESPONSE
                 )
+                logging.debug(f"Sending response: {resp}")
                 if object_bytes:
+                    logging.debug(f"Sending {len(object_bytes)} bytes")
                     send_reqs[1] = self.world_comm.Isend(
                         [object_bytes, MPI.BYTE],
                         dest=HEAD_RANK_ID,

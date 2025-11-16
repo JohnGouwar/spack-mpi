@@ -1,5 +1,5 @@
 #!/bin/bash
-TEST_SPEC=zlib
+TEST_SPEC=gmake
 LOG_FILE=head_node.log
 if [ ! -f $TEST_SPEC.spec.json ]
 then
@@ -13,9 +13,8 @@ then
 fi
 if [ ! -z $SPACK_ENV ]
 then
-    echo "Clean and GC"
+    echo "Running GC"
     spack env deactivate
-    spack clean -a
     spack gc -y
 fi
 if [ -z $SPACK_ENV ]
@@ -31,4 +30,4 @@ fi
 mpirun -np 1 spack clustcc head \
        --spec-json $TEST_SPEC.spec.json \
        --clustcc-spec-json clustcc.spec.json \
-       --local-concurrent-tasks 3 : -np 1 spack clustcc worker
+       --local-concurrent-tasks 3 : -np 3 spack clustcc worker

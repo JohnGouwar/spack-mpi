@@ -81,7 +81,7 @@ def normalize_cmd_args(args: list[str], td: str) -> tuple[str, str, str, list[st
 
 
 class MpiWorkerRank:
-    def __init__(self, forkserver: ForkServer):
+    def __init__(self, forkserver: ForkServer, logging_level):
         assert MPI.Is_initialized()
         self.world_comm = MPI.COMM_WORLD.Dup()
         self.fork_server = forkserver
@@ -89,7 +89,7 @@ class MpiWorkerRank:
             filename=f"worker_{self.world_comm.Get_rank()}.log",
             filemode="w",
             format="%(asctime)s - %(message)s",
-            level=logging.DEBUG
+            level=logging_level
         )
 
     def handle_cc_args(

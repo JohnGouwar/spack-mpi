@@ -2,13 +2,12 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import mpi4py
-from mpi.logs import setup_logging_queue
 from spack.cmd.common import arguments
 
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
 from mpi4py import MPI  # noqa: E402
-
+import logging
 try:
     from spack.extensions.mpi.constants import HEAD_NODE_LOGGER_NAME
     from spack.extensions.mpi.head_rank import HeadRankTaskServer, MpiHeadRank
@@ -25,14 +24,10 @@ def setup_parser(parser: ArgumentParser):
     """
     Required method for configuring parser for spack command
     """
+    parser.add_argument("--logging-level", choices=["debug", "warning", "error", "none"], default="none")
     subparsers = parser.add_subparsers(dest="subcommand")
     head_parser = subparsers.add_parser("head")
     arguments.add_common_arguments(head_parser, ["specs"])
-    head_parser.add_argument(
-        "--mq-name",
-        help="Name of the Posix message queue the wrapper will contact",
-        default="/spackclustccmq",
-    )
     head_parser.add_argument("--spec-json", help="Concretized spec to test")
     head_parser.add_argument("--clustcc-spec-json", help="Concretized wrapper spec")
     head_parser.add_argument(
@@ -42,10 +37,20 @@ def setup_parser(parser: ArgumentParser):
 
 
 def clustcc(parser, args):
+    if args.logging_level == "none":
+        logging_level = logging.NOTSET
+    elif args.logging_level == "debug":
+        logging_level = logging.DEBUG
+    elif args.logging_level == "error":
+        logging_level = logging.ERROR
+    elif args.logging_level == "warning":
+        logging_level = logging.WARNING
+    else:
+        raise Exception(f"Unrecognized logging level: {args.logging_level}")
     if args.subcommand == "head":
         try:
             with setup_logging_queue(
-                HEAD_NODE_LOGGER_NAME, Path("head_node.log")
+                    HEAD_NODE_LOGGER_NAME, Path("head_node.log"), logging_level
             ) as logging_queue:
                 spec_json_path = Path(args.spec_json) if args.spec_json else None
                 clustcc_json_path = (
@@ -69,6 +74,6 @@ def clustcc(parser, args):
         forkserver = ForkServer()
         try:
             MPI.Init()
-            MpiWorkerRank(forkserver).run()
+            MpiWorkerRank(forkserver, logging_level).run()
         finally:
             MPI.Finalize()

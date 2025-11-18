@@ -30,4 +30,4 @@ fi
 mpirun -np 1 spack clustcc head \
        --spec-json $TEST_SPEC.spec.json \
        --clustcc-spec-json clustcc.spec.json \
-       --local-concurrent-tasks 3 : -np 3 spack clustcc worker
+       --local-concurrent-tasks 3 : -np 4 spack clustcc worker

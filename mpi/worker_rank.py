@@ -1,5 +1,6 @@
 import logging
 import os
+from time import sleep
 from multiprocessing import Pipe, Process
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -8,15 +9,16 @@ from typing import Optional
 from tempfile import TemporaryDirectory
 
 import mpi4py
+
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
 from mpi4py import MPI  # noqa: E402
 
 try:
-    from spack.extensions.mpi.constants import HEAD_RANK_ID, WorkerResponseTag
+    from spack.extensions.mpi.constants import HEAD_RANK_ID, WorkerResponseTag, DEFAULT_PORTFILE
     from spack.extensions.mpi.task import RemoteCompilerResponse, RemoteCompilerTask
 except ImportError:
-    from constants import HEAD_RANK_ID, WorkerResponseTag
+    from constants import HEAD_RANK_ID, WorkerResponseTag, DEFAULT_PORTFILE
     from task import RemoteCompilerResponse, RemoteCompilerTask
 
 
@@ -81,16 +83,34 @@ def normalize_cmd_args(args: list[str], td: str) -> tuple[str, str, str, list[st
 
 
 class MpiWorkerRank:
-    def __init__(self, forkserver: ForkServer, logging_level):
+    def __init__(
+            self,
+            forkserver: ForkServer,
+            logging_level,
+            port_file: Path = DEFAULT_PORTFILE
+    ):
         assert MPI.Is_initialized()
-        self.world_comm = MPI.COMM_WORLD.Dup()
-        self.fork_server = forkserver
         logging.basicConfig(
-            filename=f"worker_{self.world_comm.Get_rank()}.log",
+            filename=f"worker_{MPI.COMM_WORLD.Get_rank() + 1}.log",
             filemode="w",
             format="%(asctime)s - %(message)s",
             level=logging_level
         )
+        world_comm = MPI.COMM_WORLD.Dup()
+        if MPI.COMM_WORLD.Get_rank() == 0:
+            while not port_file.exists():
+                sleep(0.1)
+            with open(port_file, "r") as f:
+                port_name = f.read()
+            MPI.COMM_WORLD.bcast(port_name, root=0)
+        else:
+            port_name = MPI.COMM_WORLD.bcast(None, root=0)
+        intercomm = world_comm.Connect(port_name)
+        self.world_comm = MPI.Intercomm.Merge(intercomm, high=True)
+        assert self.world_comm.Get_rank() != HEAD_RANK_ID, (
+            f"Worker rank must not have rank HEAD_RANK_ID({HEAD_RANK_ID})"
+        )
+        self.fork_server = forkserver
 
     def handle_cc_args(
             self, task: RemoteCompilerTask, td: str

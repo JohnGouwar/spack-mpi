@@ -1,4 +1,5 @@
 import logging
+import os
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import Queue
@@ -28,6 +29,7 @@ try:
         HEAD_RANK_ID,
         MQ_DONE,
         MQ_NAME,
+        DEFAULT_PORTFILE,
         WorkerResponseTag
     )
     from spack.extensions.mpi.logs import LoggingProcess, attach_queue_to_logger
@@ -42,7 +44,7 @@ try:
     )
 except ImportError:
     from compile_commands import parse_compile_command_list
-    from constants import HEAD_NODE_LOGGER_NAME, HEAD_RANK_ID, MQ_DONE, MQ_NAME, WorkerResponseTag
+    from constants import HEAD_NODE_LOGGER_NAME, HEAD_RANK_ID, MQ_DONE, MQ_NAME, WorkerResponseTag, DEFAULT_PORTFILE
     from logs import LoggingProcess, attach_queue_to_logger
     from swap import _swap_in_spec, concretize_with_clustcc
     from task import (
@@ -319,7 +321,11 @@ class MpiHeadRank:
     def _rank_from_index(index):
         return (index // 2) + 1
 
-    def __init__(self, task_server: HeadRankTaskServer):
+    def __init__(
+            self,
+            task_server: HeadRankTaskServer,
+            port_file: Path = DEFAULT_PORTFILE
+    ):
         """
         Requires MPI.Init() has been called
         """
@@ -327,7 +333,20 @@ class MpiHeadRank:
         assert MPI.COMM_WORLD.Get_rank() == HEAD_RANK_ID, (
             f"head rank must be rank {HEAD_RANK_ID}"
         )
-        self.world_comm = MPI.COMM_WORLD.Dup()
+        world_comm = MPI.COMM_WORLD.Dup()
+        port_name = MPI.Open_port()
+        # Publish the name to the agreed upon file, more portable that MPI.Publish_name
+        # Temp write assures that the file is written atomically
+        port_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_port_file = port_file.with_name(port_file.name + "temp")
+        with open(temp_port_file, "w") as f:
+            f.write(port_name)
+        os.rename(temp_port_file, port_file)
+        intercomm = world_comm.Accept(port_name, root=0)
+        self.world_comm = MPI.Intercomm.Merge(intercomm, high=False)
+        assert self.world_comm.Get_rank() == HEAD_RANK_ID, (
+            f"head rank must be rank {HEAD_RANK_ID}"
+        )
         self.nworkers = self.world_comm.Get_size() - 1
         self.work_requests = [MPI.REQUEST_NULL for _ in range(2 * self.nworkers)]
         self.obj_recv_requests = [MPI.REQUEST_NULL for _ in range(self.nworkers)]

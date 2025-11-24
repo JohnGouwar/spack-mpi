@@ -1,6 +1,7 @@
 #!/bin/bash
 TEST_SPEC=gmake
 LOG_FILE=head_node.log
+PORT_FILE=/tmp/port.txt
 if [ ! -f $TEST_SPEC.spec.json ]
 then
     echo "Concretizing $TEST_SPEC"
@@ -27,7 +28,10 @@ then
     echo "Removing log files"
     rm -f *.log
 fi
-mpirun -np 1 spack clustcc head \
+CLUSTCC_CMD="spack clustcc --logging-level debug --port-file $PORT_FILE"
+mpirun -np 1 $CLUSTCC_CMD head \
        --spec-json $TEST_SPEC.spec.json \
        --clustcc-spec-json clustcc.spec.json \
-       --local-concurrent-tasks 3 : -np 4 spack clustcc worker
+       --local-concurrent-tasks 3 &
+mpirun -np 4 $CLUSTCC_CMD worker &
+wait

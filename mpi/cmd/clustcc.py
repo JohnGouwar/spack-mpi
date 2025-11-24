@@ -9,12 +9,12 @@ mpi4py.rc.finalize = False
 from mpi4py import MPI  # noqa: E402
 import logging
 try:
-    from spack.extensions.mpi.constants import HEAD_NODE_LOGGER_NAME
+    from spack.extensions.mpi.constants import HEAD_NODE_LOGGER_NAME, DEFAULT_PORTFILE
     from spack.extensions.mpi.head_rank import HeadRankTaskServer, MpiHeadRank
     from spack.extensions.mpi.logs import setup_logging_queue
     from spack.extensions.mpi.worker_rank import ForkServer, MpiWorkerRank
 except ImportError:
-    from constants import HEAD_NODE_LOGGER_NAME
+    from constants import HEAD_NODE_LOGGER_NAME, DEFAULT_PORTFILE
     from head_rank import HeadRankTaskServer, MpiHeadRank
     from logs import setup_logging_queue
     from worker_rank import ForkServer, MpiWorkerRank
@@ -24,7 +24,17 @@ def setup_parser(parser: ArgumentParser):
     """
     Required method for configuring parser for spack command
     """
-    parser.add_argument("--logging-level", choices=["debug", "warning", "error", "none"], default="none")
+    parser.add_argument(
+        "--logging-level",
+        choices=["debug", "warning", "error", "none"],
+        default="none",
+        help="Level for debugging"
+    )
+    parser.add_argument(
+        "--port-file",
+        default=DEFAULT_PORTFILE,
+        help="File where port name will be published to link processes"
+    )
     subparsers = parser.add_subparsers(dest="subcommand")
     head_parser = subparsers.add_parser("head")
     arguments.add_common_arguments(head_parser, ["specs"])

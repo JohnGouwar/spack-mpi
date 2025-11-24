@@ -32,6 +32,7 @@ def setup_parser(parser: ArgumentParser):
     )
     parser.add_argument(
         "--port-file",
+        type=Path,
         default=DEFAULT_PORTFILE,
         help="File where port name will be published to link processes"
     )
@@ -74,7 +75,7 @@ def clustcc(parser, args):
                     logging_queue=logging_queue,
                 )
                 MPI.Init()
-                MpiHeadRank(hrts).run()
+                MpiHeadRank(hrts, port_file=args.port_file).run()
         except Exception as e:
             raise e
         finally:
@@ -84,6 +85,6 @@ def clustcc(parser, args):
         forkserver = ForkServer()
         try:
             MPI.Init()
-            MpiWorkerRank(forkserver, logging_level).run()
+            MpiWorkerRank(forkserver, logging_level, port_file=args.port_file).run()
         finally:
             MPI.Finalize()

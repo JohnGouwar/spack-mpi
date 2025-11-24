@@ -29,7 +29,6 @@ try:
         HEAD_RANK_ID,
         MQ_DONE,
         MQ_NAME,
-        DEFAULT_PORTFILE,
         WorkerResponseTag
     )
     from spack.extensions.mpi.logs import LoggingProcess, attach_queue_to_logger
@@ -44,7 +43,7 @@ try:
     )
 except ImportError:
     from compile_commands import parse_compile_command_list
-    from constants import HEAD_NODE_LOGGER_NAME, HEAD_RANK_ID, MQ_DONE, MQ_NAME, WorkerResponseTag, DEFAULT_PORTFILE
+    from constants import HEAD_NODE_LOGGER_NAME, HEAD_RANK_ID, MQ_DONE, MQ_NAME, WorkerResponseTag
     from logs import LoggingProcess, attach_queue_to_logger
     from swap import _swap_in_spec, concretize_with_clustcc
     from task import (
@@ -324,7 +323,7 @@ class MpiHeadRank:
     def __init__(
             self,
             task_server: HeadRankTaskServer,
-            port_file: Path = DEFAULT_PORTFILE
+            port_file: Path
     ):
         """
         Requires MPI.Init() has been called

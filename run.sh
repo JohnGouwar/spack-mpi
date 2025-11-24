@@ -35,3 +35,4 @@ mpirun -np 1 $CLUSTCC_CMD head \
        --local-concurrent-tasks 3 &
 mpirun -np 4 $CLUSTCC_CMD worker &
 wait
+rm $PORT_FILE

@@ -15,10 +15,10 @@ mpi4py.rc.finalize = False
 from mpi4py import MPI  # noqa: E402
 
 try:
-    from spack.extensions.mpi.constants import HEAD_RANK_ID, WorkerResponseTag, DEFAULT_PORTFILE
+    from spack.extensions.mpi.constants import HEAD_RANK_ID, WorkerResponseTag
     from spack.extensions.mpi.task import RemoteCompilerResponse, RemoteCompilerTask
 except ImportError:
-    from constants import HEAD_RANK_ID, WorkerResponseTag, DEFAULT_PORTFILE
+    from constants import HEAD_RANK_ID, WorkerResponseTag
     from task import RemoteCompilerResponse, RemoteCompilerTask
 
 
@@ -87,7 +87,7 @@ class MpiWorkerRank:
             self,
             forkserver: ForkServer,
             logging_level,
-            port_file: Path = DEFAULT_PORTFILE
+            port_file: Path
     ):
         assert MPI.Is_initialized()
         logging.basicConfig(

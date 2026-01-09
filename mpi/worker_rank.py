@@ -87,11 +87,13 @@ class MpiWorkerRank:
             self,
             forkserver: ForkServer,
             logging_level,
+            logging_prefix: Path,
             port_file: Path
     ):
         assert MPI.Is_initialized()
+        logfile = logging_prefix / f"worker_{MPI.COMM_WORLD.Get_rank() + 1}.log"
         logging.basicConfig(
-            filename=f"worker_{MPI.COMM_WORLD.Get_rank() + 1}.log",
+            filename=str(logfile),
             filemode="w",
             format="%(asctime)s - %(message)s",
             level=logging_level
@@ -102,11 +104,15 @@ class MpiWorkerRank:
                 sleep(0.1)
             with open(port_file, "r") as f:
                 port_name = f.read()
+            logging.debug(f"Broadcasting portname: {port_name} from rank 0")
             MPI.COMM_WORLD.bcast(port_name, root=0)
         else:
+            logging.debug(f"Waiting for portname broadcast")
             port_name = MPI.COMM_WORLD.bcast(None, root=0)
+            logging.debug(f"Got port_name: {port_name}")
         intercomm = world_comm.Connect(port_name)
         self.world_comm = MPI.Intercomm.Merge(intercomm, high=True)
+        logging.debug(f"Successfully merged intercomm with MPI.COMM_WORLD")
         assert self.world_comm.Get_rank() != HEAD_RANK_ID, (
             f"Worker rank must not have rank HEAD_RANK_ID({HEAD_RANK_ID})"
         )

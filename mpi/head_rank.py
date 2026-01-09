@@ -2,19 +2,22 @@ import logging
 import os
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import Queue
+from multiprocessing import Queue, Event
+from multiprocessing.synchronize import Event as EventT
 from pathlib import Path
 from queue import Empty
 from subprocess import PIPE, run
 from tempfile import NamedTemporaryFile
+from threading import local
 from time import sleep
 from typing import Optional, TypedDict
 
-from PosixMQ import PosixMQ
+from epic import PosixMQ, PosixShm
 from spack.cmd import parse_specs
 from spack.installer import PackageInstaller
 from spack.package_base import PackageBase
 from spack.spec import Spec
+from spack.concretize import concretize_together
 
 import mpi4py  # noqa: E402
 
@@ -32,7 +35,6 @@ try:
         WorkerResponseTag
     )
     from spack.extensions.mpi.logs import LoggingProcess, attach_queue_to_logger
-    from spack.extensions.mpi.swap import _swap_in_spec, concretize_with_clustcc
     from spack.extensions.mpi.task import (
         LocalCompilerTask,
         LocalPreprocessorTask,
@@ -45,7 +47,6 @@ except ImportError:
     from compile_commands import parse_compile_command_list
     from constants import HEAD_NODE_LOGGER_NAME, HEAD_RANK_ID, MQ_DONE, MQ_NAME, WorkerResponseTag
     from logs import LoggingProcess, attach_queue_to_logger
-    from swap import _swap_in_spec, concretize_with_clustcc
     from task import (
         LocalCompilerTask,
         LocalPreprocessorTask,
@@ -158,13 +159,14 @@ class HeadRankTaskServer:
     """
 
     @staticmethod
-    def _installer(packages: list[PackageBase]):
+    def _installer(packages: list[PackageBase], start_event: EventT):
         logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
         logger.info("Starting installer")
+        start_event.wait()
         try:
             PackageInstaller(packages).install()
         except Exception as e:
-            logging.debug(f"Got exception {e} in installer")
+            logger.debug(f"Got exception {e} in installer")
             raise e
         finally:
             logger.debug(f"Installer sending {MQ_DONE} to listener")
@@ -180,13 +182,14 @@ class HeadRankTaskServer:
         logger.info("Starting listener daemon")
         try:
             while True:
-                task_str = mq.recv()
-                logger.debug(f"Listener received: {task_str}")
-                if task_str == MQ_DONE:
+                msg = mq.recv()
+                logger.debug(f"Listener received: {msg}")
+                if msg == MQ_DONE:
                     return
-                raw_task = parse_task_from_message(task_str)
+                raw_task = parse_task_from_message(msg)
+                logger.debug(f"Got raw task: {raw_task}")
                 local_task = refine_compiler_task(raw_task)
-                logger.debug(f"Listener refined: {task_str} into {local_task}")
+                logger.debug(f"Refined raw task to: {local_task}")
                 local_task_queue.put(local_task)
         finally:
             logger.debug(f"Listener sending None sentinel to local_task_queue")
@@ -233,7 +236,6 @@ class HeadRankTaskServer:
         self,
         specs: list[str],
         spec_json: Optional[Path],
-        clustcc_spec_json: Optional[Path],
         concurrent_tasks: int,
         logging_queue: Queue,
     ):
@@ -246,6 +248,7 @@ class HeadRankTaskServer:
         self.local_task_queue = Queue()
         self.remote_task_queue = Queue()
         self.logging_queue = logging_queue
+        self.start_event = Event()
         LoggingProcess(
             target=HeadRankTaskServer._listener_server,
             args=(MQ_NAME, self.local_task_queue),
@@ -263,27 +266,21 @@ class HeadRankTaskServer:
         ).start()
         # Installer proc
         if (
-            spec_json
-            and clustcc_spec_json
+            spec_json is not None
             and spec_json.exists()
-            and clustcc_spec_json.exists()
         ):
             with open(spec_json, "r") as f:
                 spec = Spec.from_json(f)
-            with open(clustcc_spec_json, "r") as f:
-                clustcc_spec = Spec.from_json(f)
-            wrapped_test_spec = _swap_in_spec(
-                spec, {"compiler-wrapper": clustcc_spec}, {}
-            )
-            packages = [wrapped_test_spec.package]
+            assert spec.concrete, "Must read concrete spec from json"
+            packages = [spec.package]
         else:
             assert len(specs) > 0, "Must build at least one spec"
-            user_specs = parse_specs(specs)
-            clustcc_specs = concretize_with_clustcc(user_specs)
-            packages = [c.package for c in clustcc_specs]
+            user_specs = [(s, None) for s in parse_specs(specs)]
+            concretized_specs = [concr for (_, concr) in concretize_together(user_specs)]
+            packages = [c.package for c in concretized_specs]
         LoggingProcess(
             target=HeadRankTaskServer._installer,
-            args=(packages,),
+            args=(packages, self.start_event),
             log_queue=self.logging_queue,
         ).start()
 
@@ -294,6 +291,9 @@ class HeadRankTaskServer:
 
     def dequeue_remote(self) -> RemoteCompilerTask:
         return self.remote_task_queue.get_nowait()
+
+    def start_installer(self):
+        self.start_event.set()
 
 
 class ObjRecvBuffer(TypedDict):
@@ -332,6 +332,7 @@ class MpiHeadRank:
         assert MPI.COMM_WORLD.Get_rank() == HEAD_RANK_ID, (
             f"head rank must be rank {HEAD_RANK_ID}"
         )
+        self.logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
         world_comm = MPI.COMM_WORLD.Dup()
         port_name = MPI.Open_port()
         # Publish the name to the agreed upon file, more portable that MPI.Publish_name
@@ -343,6 +344,7 @@ class MpiHeadRank:
         os.rename(temp_port_file, port_file)
         intercomm = world_comm.Accept(port_name, root=0)
         self.world_comm = MPI.Intercomm.Merge(intercomm, high=False)
+        self.logger.debug(f"Full world size: {self.world_comm.Get_size()}")
         assert self.world_comm.Get_rank() == HEAD_RANK_ID, (
             f"head rank must be rank {HEAD_RANK_ID}"
         )
@@ -353,7 +355,6 @@ class MpiHeadRank:
             None for _ in range(self.nworkers)
         ]
         self.task_server = task_server
-        self.logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
 
     def _send_task_to_rank(self, dest_rank: int, task: RemoteCompilerTask):
         send_req = self.world_comm.isend(task, dest=dest_rank)
@@ -433,6 +434,7 @@ class MpiHeadRank:
         # closed and all data is cleared from it
         work_request_statuses = [MPI.Status() for _ in idle_workers]
         object_bytes_statuses = [MPI.Status() for _ in idle_workers]
+        self.task_server.start_installer()
         try:
             while True:
                 # clear idle workers with available tasks

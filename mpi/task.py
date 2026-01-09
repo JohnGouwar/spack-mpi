@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import os
 from typing import Optional
+from epic import PosixShm
 
 try:
     from spack.extensions.mpi.constants import MSG_SEP
@@ -48,10 +50,36 @@ class RemoteCompilerResponse:
     output_filename: Optional[str]  # name of output object file
     cmd: Optional[list[str]]  # send back the command to run locally if failed
 
+def _mode_from_cmd(cmd: list[str]) -> str:
+    if cmd[0] in ["ld", "ld.gold", "ld.lld"]:
+        return "ld"
+    if cmd[0] == "cpp":
+        return "cpp"
+    for arg in cmd:
+        if arg == "-E":
+            return "cpp"
+        elif arg == "-S":
+            return "as"
+        elif arg == "-c":
+            return "cc"
+        elif arg in ["-v", "-V", "--version", "-dumpversion"]:
+            return "vcheck"
+    return "ccld"
 
 def parse_task_from_message(msg: str) -> RawCompilerTask:
-    mode, wd, output_fifo, *cmd = msg.split(MSG_SEP)
-    return RawCompilerTask(mode, wd, output_fifo, cmd)
+    shm_name, size = msg.split(MSG_SEP)
+    shm = PosixShm.open(shm_name, int(size))
+    data = shm.read().tobytes().decode()
+    try:
+        wd, fifo, *cmd = data.split(MSG_SEP)
+        mode = _mode_from_cmd(cmd)
+        return RawCompilerTask(mode, wd, fifo, cmd)
+    except Exception as e:
+        print(f"Failed to parse {msg} as a compile command")
+        raise e
+    finally:
+        shm.close()
+        shm.unlink()
 
 
 def refine_compiler_task(

@@ -2,23 +2,25 @@ spack:
   config:
     extensions:
       - ../
-  packages:
-    gcc:
-      buildable: false
   specs:
-  - 'python@:3.13'
+  - 'python@3.12:'
   - clingo@spack
+  - "clustcc-gcc ^gcc@11:"
   - py-mpi4py
-  - mpich
-  - 'gcc@11:'
-  - py-pip
-  - py-posixmq
+  - py-epic-ipc
+  - mpich # or any other MPI implementation
+  - flux-sched # site may already provide flux
   view: true
   concretizer:
     unify: true
-  env_vars:
-    set:
-      SPACK_PYTHON: $env/.spack-env/view/bin/python3
-
   repos:
-    extensions: /home/jgouwar/git/llnl/spack-extension-packages/spack_repo/extensions
+    extensions:
+      git: "https://github.com/JohnGouwar/spack-extension-packages.git"
+  toolchains:
+    clustcc_toochain:
+      - spec: "%c=clustcc-gcc"
+      - when: "%c"
+      - spec: "%cxx=clustcc-gcc"
+      - when: "%cxx"
+      - spec: "%fortran=gcc"
+      - when: "%fortran"

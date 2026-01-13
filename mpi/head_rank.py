@@ -11,13 +11,16 @@ from tempfile import NamedTemporaryFile
 from threading import local
 from time import sleep
 from typing import Optional, TypedDict
+import spack.llnl.util.tty as tty
+import spack.store
 
 from epic import PosixMQ, PosixShm
 from spack.cmd import parse_specs
 from spack.installer import PackageInstaller
 from spack.package_base import PackageBase
 from spack.spec import Spec
-from spack.concretize import concretize_together
+from spack.concretize import concretize_together, concretize_one
+import spack.deptypes as dt
 
 import mpi4py  # noqa: E402
 
@@ -64,8 +67,6 @@ except ImportError:
 # limit throughput
 global_local_task_queue = None
 global_remote_task_queue = None
-
-
 def task_server_initializer(local_queue, remote_queue, logging_queue):
     global global_local_task_queue, global_remote_task_queue
     global_local_task_queue = local_queue
@@ -147,6 +148,26 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
         logger.debug(f"Exception in preprocessor task: {e}")
         global_local_task_queue.put(LOCAL_FALLBACK)
         return
+
+def ensure_clustcc_gcc():
+    clustcc_spec = spack.store.STORE.db.query_one("clustcc-gcc ^gcc", installed=True)
+    if clustcc_spec is not None:
+        tty.info(f"Already installed {clustcc_spec.format('{name}/{hash:7}')}")
+        return
+    else:
+        tty.info("Installing tracecc-gcc")
+        clustcc_spec = spack.concretize.concretize_one("clustcc-gcc ^gcc")
+        PackageInstaller([clustcc_spec.package]).install()
+
+        
+def concretize_with_clustcc(specs: list[Spec]):
+    ensure_clustcc_gcc()
+    for s in specs:
+        s.add_dependency_edge(Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("c",), when=Spec("%c"))
+        s.add_dependency_edge(Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("cxx",), when=Spec("%cxx"))
+    # TODO: Cache concretizations in source directories
+    to_concretize = [(s, None) for s in specs]
+    return [concr for _, concr in spack.concretize.concretize_separately(to_concretize)]
 
 
 class HeadRankTaskServer:
@@ -275,8 +296,7 @@ class HeadRankTaskServer:
             packages = [spec.package]
         else:
             assert len(specs) > 0, "Must build at least one spec"
-            user_specs = [(s, None) for s in parse_specs(specs)]
-            concretized_specs = [concr for (_, concr) in concretize_together(user_specs)]
+            concretized_specs = concretize_with_clustcc(parse_specs(specs))
             packages = [c.package for c in concretized_specs]
         LoggingProcess(
             target=HeadRankTaskServer._installer,

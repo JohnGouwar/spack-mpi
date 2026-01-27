@@ -1,5 +1,5 @@
 #!/bin/bash
-TEST_SPEC=simple-cpackage%clustcc-gcc@15.2.0
+TEST_SPEC=simple-c-package%clustcc-gcc@15.2.0
 PORT_FILE=/tmp/port.txt
 if [ -z $SPACK_ENV ]
 then

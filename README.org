@@ -8,7 +8,7 @@ This is a work in progress and not ready for production use.
 The following software is required:
 - Python>=3.13 (this may work on older Python versions, but is developed on 3.13)
 - Spack>=1.0
-- [[https://www.github.com/JohnGouwar/spack-extension-packages][spack-extension-packages]] repo
+- [[https://www.github.com/JohnGouwar/spack-extension-packages][spack-extension-packages]] repository
 - MPI>=1.0 and a compatible ~mpi4py~
 - GCC>=11 
 

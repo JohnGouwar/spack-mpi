@@ -84,11 +84,11 @@ def normalize_cmd_args(args: list[str], td: str) -> tuple[str, str, str, list[st
 
 class MpiWorkerRank:
     def __init__(
-            self,
-            forkserver: ForkServer,
-            logging_level,
-            logging_prefix: Path,
-            port_file: Path
+        self,
+        forkserver: ForkServer,
+        logging_level,
+        logging_prefix: Path,
+        port_file: Path,
     ):
         assert MPI.Is_initialized()
         logfile = logging_prefix / f"worker_{MPI.COMM_WORLD.Get_rank() + 1}.log"
@@ -96,7 +96,7 @@ class MpiWorkerRank:
             filename=str(logfile),
             filemode="w",
             format="%(asctime)s - %(message)s",
-            level=logging_level
+            level=logging_level,
         )
         world_comm = MPI.COMM_WORLD.Dup()
         if MPI.COMM_WORLD.Get_rank() == 0:
@@ -119,10 +119,12 @@ class MpiWorkerRank:
         self.fork_server = forkserver
 
     def handle_cc_args(
-            self, task: RemoteCompilerTask, td: str
+        self, task: RemoteCompilerTask, td: str
     ) -> tuple[RemoteCompilerResponse, Optional[bytes]]:
         try:
-            (infile, orig_outfile, outfile, norm_args) = normalize_cmd_args(task.orig_cmd, td)
+            (infile, orig_outfile, outfile, norm_args) = normalize_cmd_args(
+                task.orig_cmd, td
+            )
             with open(infile, "w") as f:
                 f.write(task.input_file_text)
             res = self.fork_server.spawn(norm_args, stderr=PIPE, stdout=PIPE)

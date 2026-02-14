@@ -50,6 +50,7 @@ class RemoteCompilerResponse:
     output_filename: Optional[str]  # name of output object file
     cmd: Optional[list[str]]  # send back the command to run locally if failed
 
+
 def _mode_from_cmd(cmd: list[str]) -> str:
     if cmd[0] in ["ld", "ld.gold", "ld.lld"]:
         return "ld"
@@ -65,6 +66,7 @@ def _mode_from_cmd(cmd: list[str]) -> str:
         elif arg in ["-v", "-V", "--version", "-dumpversion"]:
             return "vcheck"
     return "ccld"
+
 
 def parse_task_from_message(msg: str) -> RawCompilerTask:
     shm_name, size = msg.split(MSG_SEP)

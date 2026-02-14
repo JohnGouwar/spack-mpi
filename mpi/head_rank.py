@@ -35,7 +35,7 @@ try:
         HEAD_RANK_ID,
         MQ_DONE,
         MQ_NAME,
-        WorkerResponseTag
+        WorkerResponseTag,
     )
     from spack.extensions.mpi.logs import LoggingProcess, attach_queue_to_logger
     from spack.extensions.mpi.task import (
@@ -48,7 +48,13 @@ try:
     )
 except ImportError:
     from compile_commands import parse_compile_command_list
-    from constants import HEAD_NODE_LOGGER_NAME, HEAD_RANK_ID, MQ_DONE, MQ_NAME, WorkerResponseTag
+    from constants import (
+        HEAD_NODE_LOGGER_NAME,
+        HEAD_RANK_ID,
+        MQ_DONE,
+        MQ_NAME,
+        WorkerResponseTag,
+    )
     from logs import LoggingProcess, attach_queue_to_logger
     from task import (
         LocalCompilerTask,
@@ -67,6 +73,8 @@ except ImportError:
 # limit throughput
 global_local_task_queue = None
 global_remote_task_queue = None
+
+
 def task_server_initializer(local_queue, remote_queue, logging_queue):
     global global_local_task_queue, global_remote_task_queue
     global_local_task_queue = local_queue
@@ -149,22 +157,28 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
         global_local_task_queue.put(LOCAL_FALLBACK)
         return
 
+
 def ensure_clustcc_gcc():
-    clustcc_spec = spack.store.STORE.db.query_one("clustcc-gcc ^gcc", installed=True)
+    clustcc_spec = spack.store.STORE.db.query_one("clustcc-gcc", installed=True)
     if clustcc_spec is not None:
         tty.info(f"Already installed {clustcc_spec.format('{name}/{hash:7}')}")
         return
     else:
         tty.info("Installing tracecc-gcc")
-        clustcc_spec = spack.concretize.concretize_one("clustcc-gcc ^gcc")
+        clustcc_spec = concretize_one("clustcc-gcc")
         PackageInstaller([clustcc_spec.package]).install()
 
-        
+
 def concretize_with_clustcc(specs: list[Spec]):
     ensure_clustcc_gcc()
     for s in specs:
-        s.add_dependency_edge(Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("c",), when=Spec("%c"))
-        s.add_dependency_edge(Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("cxx",), when=Spec("%cxx"))
+        # TODO: constrain(%[when=%c]c={clustcc_spec.format({name}/{hash})}clustcc-gcc/hash) ...
+        s.add_dependency_edge(
+            Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("c",), when=Spec("%c")
+        )
+        s.add_dependency_edge(
+            Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("cxx",), when=Spec("%cxx")
+        )
     # TODO: Cache concretizations in source directories
     to_concretize = [(s, None) for s in specs]
     return [concr for _, concr in spack.concretize.concretize_separately(to_concretize)]
@@ -195,7 +209,6 @@ class HeadRankTaskServer:
             mq.send(MQ_DONE, 2)
             mq.close()
 
-            
     @staticmethod
     def _listener_server(mq_name: str, local_task_queue: Queue):
         mq = PosixMQ.create(mq_name)
@@ -218,7 +231,6 @@ class HeadRankTaskServer:
             local_task_queue.close()
             mq.unlink()
 
-
     @staticmethod
     def _task_server_loop(
         local_task_queue: Queue,
@@ -237,7 +249,9 @@ class HeadRankTaskServer:
                 while True:
                     task = local_task_queue.get()
                     if task is None:  # sentinel value for no more work
-                        logger.debug(f"Task server sending sentinel None to remote_task_queue")
+                        logger.debug(
+                            f"Task server sending sentinel None to remote_task_queue"
+                        )
                         remote_task_queue.put(None)
                         remote_task_queue.close()
                         return
@@ -286,10 +300,7 @@ class HeadRankTaskServer:
             log_queue=self.logging_queue,
         ).start()
         # Installer proc
-        if (
-            spec_json is not None
-            and spec_json.exists()
-        ):
+        if spec_json is not None and spec_json.exists():
             with open(spec_json, "r") as f:
                 spec = Spec.from_json(f)
             assert spec.concrete, "Must read concrete spec from json"
@@ -340,11 +351,7 @@ class MpiHeadRank:
     def _rank_from_index(index):
         return (index // 2) + 1
 
-    def __init__(
-            self,
-            task_server: HeadRankTaskServer,
-            port_file: Path
-    ):
+    def __init__(self, task_server: HeadRankTaskServer, port_file: Path):
         """
         Requires MPI.Init() has been called
         """
@@ -386,9 +393,7 @@ class MpiHeadRank:
         self.work_requests[send_index] = send_req
         self.work_requests[resp_recv_index] = resp_recv_req
 
-    def _handle_resp(
-        self, rank: int, resp: RemoteCompilerResponse
-    ) -> Optional[ObjRecvBuffer]:
+    def _handle_resp(self, rank: int, resp: RemoteCompilerResponse):
         if resp.rc is None:
             assert resp.cmd is not None, (
                 "Failed calls should return command for local retry"
@@ -407,21 +412,19 @@ class MpiHeadRank:
                 output_path = Path(resp.output_filename)
             else:
                 output_path = Path(resp.working_dir) / resp.output_filename
-            merged_output = resp.stdout if resp.stdout else b''
-            merged_output += resp.stderr if resp.stderr else b''
-            obj_recv_buf : ObjRecvBuffer = {
+            merged_output = resp.stdout if resp.stdout else b""
+            merged_output += resp.stderr if resp.stderr else b""
+            obj_recv_buf: ObjRecvBuffer = {
                 "path": output_path,
                 "buffer": bytearray(resp.output_bytes),
                 "output_fifo": resp.output_fifo,
-                "merged_output": merged_output 
+                "merged_output": merged_output,
             }
             self.obj_recv_buffers[rank - 1] = obj_recv_buf
-            self.obj_recv_requests[rank - 1] = (
-                self.world_comm.Irecv(
-                    [obj_recv_buf["buffer"], MPI.BYTE],
-                    source=rank,
-                    tag=WorkerResponseTag.OBJECT_BYTES,
-                )
+            self.obj_recv_requests[rank - 1] = self.world_comm.Irecv(
+                [obj_recv_buf["buffer"], MPI.BYTE],
+                source=rank,
+                tag=WorkerResponseTag.OBJECT_BYTES,
             )
         else:
             assert resp.cmd is not None, (
@@ -434,12 +437,13 @@ class MpiHeadRank:
             self.task_server.enqueue_local(
                 LocalCompilerTask(resp.working_dir, resp.output_fifo, resp.cmd)
             )
-            return None
 
     def _handle_bytes(self, index: int):
         buf_dict = self.obj_recv_buffers[index]
         assert buf_dict is not None
-        self.logger.debug(f"Writing {len(buf_dict['buffer'])} bytes to {buf_dict['path']}")
+        self.logger.debug(
+            f"Writing {len(buf_dict['buffer'])} bytes to {buf_dict['path']}"
+        )
         with open(buf_dict["path"], "wb") as f:
             f.write(buf_dict["buffer"])
         with open(buf_dict["output_fifo"], "wb") as f:
@@ -507,11 +511,16 @@ class MpiHeadRank:
                 except:
                     for i, s in enumerate(work_request_statuses):
                         status_error = MPI.Get_error_string(s.Get_error())
-                        print(f"Rank {i + 1}, Work status error:{status_error}", flush=True)
+                        print(
+                            f"Rank {i + 1}, Work status error:{status_error}",
+                            flush=True,
+                        )
                     for i, s in enumerate(object_bytes_statuses):
                         status_error = MPI.Get_error_string(s.Get_error())
-                        print(f"Rank {i + 1}, Obj recv status error:{status_error}", flush=True)
-                        
+                        print(
+                            f"Rank {i + 1}, Obj recv status error:{status_error}",
+                            flush=True,
+                        )
 
         finally:
             # When we run out of tasks, make sure to complete the ones that are still outstanding
@@ -528,8 +537,7 @@ class MpiHeadRank:
                     self._handle_bytes(i)
             self.logger.debug("Sending shutdown sentinel None to workers")
             end_communication_reqs = [
-                self.world_comm.isend(None, dest=i)
-                for i in range(1, self.nworkers+1)
+                self.world_comm.isend(None, dest=i) for i in range(1, self.nworkers + 1)
             ]
             MPI.Request.Waitall(end_communication_reqs)
             self.logger.debug("Head rank shutdown complete")

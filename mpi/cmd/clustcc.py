@@ -2,12 +2,16 @@ import os
 from argparse import ArgumentParser
 from pathlib import Path
 import subprocess
+from multiprocessing import Event
 from epic import PosixMQ, PosixShm
 
 from mpi.constants import MQ_NAME
 from mpi.task import LocalCompilerTask, parse_task_from_message
 import mpi4py
+import spack.config
+from spack.cmd import parse_specs
 from spack.cmd.common import arguments
+from spack.spec import Spec
 
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
@@ -22,11 +26,11 @@ try:
         MQ_DONE,
     )
     from spack.extensions.mpi.head_rank import (
-        HeadRankTaskServer,
-        MpiHeadRank,
         run_local_compiler_task,
+        start_head_rank,
+        concretize_with_clustcc
     )
-    from spack.extensions.mpi.logs import setup_logging_queue
+    from spack.extensions.mpi.logs import setup_logging_queue, LoggingProcess
     from spack.extensions.mpi.worker_rank import ForkServer, MpiWorkerRank
     from spack.extensions.mpi.config import (
         parse_config_file,
@@ -34,10 +38,11 @@ try:
         gen_empty_config_file,
     )
     from spack.extensions.mpi.task import LocalCompilerTask, parse_task_from_message
-except ImportError:
+except ImportError as e:
+    print(e)
     from constants import HEAD_NODE_LOGGER_NAME, DEFAULT_PORTFILE, MQ_NAME, MQ_DONE
-    from head_rank import HeadRankTaskServer, MpiHeadRank, run_local_compiler_task
-    from ..logs import setup_logging_queue
+    from head_rank import run_local_compiler_task, start_head_rank, concretize_with_clustcc
+    from ..logs import setup_logging_queue, LoggingProcess
     from worker_rank import ForkServer, MpiWorkerRank
     from config import parse_config_file, gen_launch_files, gen_empty_config_file
     from task import LocalCompilerTask, parse_task_from_message
@@ -88,7 +93,7 @@ def setup_parser(parser: ArgumentParser):
     )
     head_parser = subparsers.add_parser("head")
     arguments.add_common_arguments(head_parser, ["specs", "jobs"])
-    head_parser.add_argument("--spec-json", help="Concretized spec to test")
+    head_parser.add_argument("--spec-json", type=Path, help="Concretized spec to test")
     head_parser.add_argument(
         "--local-concurrent-tasks", help="Concurrent tasks running on head node"
     )
@@ -117,20 +122,44 @@ def clustcc(parser, args):
                 args.logging_prefix / "head_node.log",
                 logging_level,
             ) as logging_queue:
-                spec_json_path = Path(args.spec_json) if args.spec_json else None
-                hrts = HeadRankTaskServer(
-                    specs=args.specs,
-                    spec_json=spec_json_path,
-                    concurrent_tasks=int(args.local_concurrent_tasks),
-                    logging_queue=logging_queue,
-                )
-                MPI.Init()
-                MpiHeadRank(hrts, port_file=args.port_file).run()
-        except Exception as e:
-            raise e
-        finally:
-            if MPI.Is_initialized():
-                MPI.Finalize()
+                logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
+                installer_start_event = Event()
+                LoggingProcess(
+                    target=start_head_rank,
+                    args=(args.local_concurrent_tasks, logging_queue, args.port_file, installer_start_event),
+                    log_queue=logging_queue
+                ).start()
+                if args.spec_json is not None and args.spec_json.exists():
+                    with open(args.spec_json, "r") as f:
+                        spec = Spec.from_json(f)
+                    assert spec.concrete, "Must read concrete spec from json"
+                    logger.info(f'Read {spec} from {args.spec_json}')
+                    packages = [spec.package]
+                else:
+                    assert len(args.specs) > 0, "Must build at least one spec"
+                    logger.info(f'Concretizing specs passed on the command line')
+                    concretized_specs = concretize_with_clustcc(parse_specs(args.specs))
+                    logger.info(f'Concretization finished')
+                    packages = [c.package for c in concretized_specs]
+                if spack.config.get("config:installer", "old") == "new":
+                    from spack.new_installer import PackageInstaller
+                else:
+                    from spack.installer import PackageInstaller
+
+                installer_start_event.wait()
+                logger.info('Starting installer')
+                try:
+                    PackageInstaller(packages).install()
+                except Exception as e:
+                    logger.debug(f"Got exception {e} in installer")
+                finally:
+                    logger.debug(f"Installer sending {MQ_DONE} to listener")
+                    mq = PosixMQ.open(MQ_NAME)
+                    mq.send(MQ_DONE, 2)
+                    mq.close()
+
+        except:
+            pass
     elif args.subcommand == "worker":
         forkserver = ForkServer()
         try:

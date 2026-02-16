@@ -2,7 +2,7 @@ import logging
 import os
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import Queue, Event
+from multiprocessing import Queue
 from multiprocessing.synchronize import Event as EventT
 from pathlib import Path
 from queue import Empty
@@ -19,7 +19,7 @@ from spack.cmd import parse_specs
 from spack.installer import PackageInstaller
 from spack.package_base import PackageBase
 from spack.spec import Spec
-from spack.concretize import concretize_together, concretize_one
+from spack.concretize import concretize_separately, concretize_one
 import spack.deptypes as dt
 
 import mpi4py  # noqa: E402
@@ -158,21 +158,30 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
         return
 
 
-def ensure_clustcc_gcc():
-    clustcc_spec = spack.store.STORE.db.query_one("clustcc-gcc", installed=True)
+def ensure_clustcc_gcc(query_spec: str | Spec | None = None) -> Spec:
+    if query_spec is None:
+        query_spec = "clustcc-gcc"
+    
+    clustcc_spec = spack.store.STORE.db.query_one(query_spec, installed=True)
     if clustcc_spec is not None:
         tty.info(f"Already installed {clustcc_spec.format('{name}/{hash:7}')}")
-        return
+        return clustcc_spec
     else:
-        tty.info("Installing tracecc-gcc")
-        clustcc_spec = concretize_one("clustcc-gcc")
+        tty.info("Installing clustcc-gcc")
+        clustcc_spec = concretize_one(query_spec)
         PackageInstaller([clustcc_spec.package]).install()
+        return clustcc_spec
 
 
 def concretize_with_clustcc(specs: list[Spec]):
-    ensure_clustcc_gcc()
+    clustcc_spec = ensure_clustcc_gcc()
     for s in specs:
         # TODO: constrain(%[when=%c]c={clustcc_spec.format({name}/{hash})}clustcc-gcc/hash) ...
+        # Couldn't get the below working, would return unsat:
+        # clustcc_str_with_hash = clustcc_spec.format("{name}/{hash}")
+        # s.constrain(f"{s}%[when=%c virtuals=c deptypes=build]{clustcc_str_with_hash}")
+        # s.constrain(f"{s}%[when=%cxx virtuals=cxx deptypes=build]{clustcc_str_with_hash}")
+
         s.add_dependency_edge(
             Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("c",), when=Spec("%c")
         )
@@ -181,8 +190,12 @@ def concretize_with_clustcc(specs: list[Spec]):
         )
     # TODO: Cache concretizations in source directories
     to_concretize = [(s, None) for s in specs]
-    return [concr for _, concr in spack.concretize.concretize_separately(to_concretize)]
+    if len(to_concretize) == 1:
+        return [concretize_one(specs[0])]
+    else:    
+        return [concr for _, concr in concretize_separately(to_concretize)]
 
+ 
 
 class HeadRankTaskServer:
     """
@@ -192,22 +205,6 @@ class HeadRankTaskServer:
     Task Server sends None to MpiHeadRank
     MpiHeadRank sends None to all worker ranks
     """
-
-    @staticmethod
-    def _installer(packages: list[PackageBase], start_event: EventT):
-        logger = logging.getLogger(HEAD_NODE_LOGGER_NAME)
-        logger.info("Starting installer")
-        start_event.wait()
-        try:
-            PackageInstaller(packages).install()
-        except Exception as e:
-            logger.debug(f"Got exception {e} in installer")
-            raise e
-        finally:
-            logger.debug(f"Installer sending {MQ_DONE} to listener")
-            mq = PosixMQ.open(MQ_NAME)
-            mq.send(MQ_DONE, 2)
-            mq.close()
 
     @staticmethod
     def _listener_server(mq_name: str, local_task_queue: Queue):
@@ -269,10 +266,9 @@ class HeadRankTaskServer:
 
     def __init__(
         self,
-        specs: list[str],
-        spec_json: Optional[Path],
         concurrent_tasks: int,
         logging_queue: Queue,
+        start_event: Optional[EventT] = None
     ):
         """
         This must be created before MPI.Init()
@@ -283,7 +279,7 @@ class HeadRankTaskServer:
         self.local_task_queue = Queue()
         self.remote_task_queue = Queue()
         self.logging_queue = logging_queue
-        self.start_event = Event()
+        self.start_event = start_event
         LoggingProcess(
             target=HeadRankTaskServer._listener_server,
             args=(MQ_NAME, self.local_task_queue),
@@ -299,22 +295,6 @@ class HeadRankTaskServer:
             ),
             log_queue=self.logging_queue,
         ).start()
-        # Installer proc
-        if spec_json is not None and spec_json.exists():
-            with open(spec_json, "r") as f:
-                spec = Spec.from_json(f)
-            assert spec.concrete, "Must read concrete spec from json"
-            packages = [spec.package]
-        else:
-            assert len(specs) > 0, "Must build at least one spec"
-            concretized_specs = concretize_with_clustcc(parse_specs(specs))
-            packages = [c.package for c in concretized_specs]
-        LoggingProcess(
-            target=HeadRankTaskServer._installer,
-            args=(packages, self.start_event),
-            log_queue=self.logging_queue,
-        ).start()
-
     # The MpiHeadRank either takes tasks to be dispatched remotely or requeues
     # tasks to be tried locally
     def enqueue_local(self, task: LocalCompilerTask):
@@ -323,8 +303,9 @@ class HeadRankTaskServer:
     def dequeue_remote(self) -> RemoteCompilerTask:
         return self.remote_task_queue.get_nowait()
 
-    def start_installer(self):
-        self.start_event.set()
+    def notify_dependent_job(self):
+        if self.start_event is not None:
+            self.start_event.set()
 
 
 class ObjRecvBuffer(TypedDict):
@@ -458,7 +439,7 @@ class MpiHeadRank:
         # closed and all data is cleared from it
         work_request_statuses = [MPI.Status() for _ in idle_workers]
         object_bytes_statuses = [MPI.Status() for _ in idle_workers]
-        self.task_server.start_installer()
+        self.task_server.notify_dependent_job()
         try:
             while True:
                 # clear idle workers with available tasks
@@ -541,3 +522,20 @@ class MpiHeadRank:
             ]
             MPI.Request.Waitall(end_communication_reqs)
             self.logger.debug("Head rank shutdown complete")
+
+
+def start_head_rank(
+        concurrent_tasks: int,
+        logging_queue: Queue,
+        port_file: Path,
+        start_event: Optional[EventT] = None
+):
+    try:
+        task_server = HeadRankTaskServer(concurrent_tasks, logging_queue, start_event)
+        MPI.Init()
+        MpiHeadRank(task_server, port_file=port_file).run()
+    except Exception as e:
+        raise e
+    finally:
+        if MPI.Is_initialized():
+            MPI.Finalize()

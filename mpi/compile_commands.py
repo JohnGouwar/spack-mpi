@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-def _is_source(s: str) -> bool:
+def is_source(s: str) -> bool:
     SOURCE_EXTENSIONS = [".c", ".cc", ".C", ".cpp", ".cxx", ".c++"]
     return any(s.endswith(ext) for ext in SOURCE_EXTENSIONS)
 
@@ -21,7 +21,7 @@ def parse_compile_command_list(args: list[str]) -> ParsedCommand:
     output_file = None
     output_index = None
     for i, arg in enumerate(args):
-        if _is_source(arg):
+        if is_source(arg):
             if source_file:
                 raise ValueError("Multiple source files detected")
             else:

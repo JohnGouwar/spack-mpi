@@ -8,7 +8,6 @@ from pathlib import Path
 from queue import Empty
 from subprocess import PIPE, run
 from tempfile import NamedTemporaryFile
-from threading import local
 from time import sleep
 from typing import Optional, TypedDict
 import spack.llnl.util.tty as tty
@@ -21,6 +20,7 @@ from spack.package_base import PackageBase
 from spack.spec import Spec
 from spack.concretize import concretize_separately, concretize_one
 import spack.deptypes as dt
+import spack.config
 
 import mpi4py  # noqa: E402
 
@@ -158,42 +158,6 @@ def run_local_preprocessor_task(task: LocalPreprocessorTask):
         return
 
 
-def ensure_clustcc_gcc(query_spec: str | Spec | None = None) -> Spec:
-    if query_spec is None:
-        query_spec = "clustcc-gcc"
-    
-    clustcc_spec = spack.store.STORE.db.query_one(query_spec, installed=True)
-    if clustcc_spec is not None:
-        tty.info(f"Already installed {clustcc_spec.format('{name}/{hash:7}')}")
-        return clustcc_spec
-    else:
-        tty.info("Installing clustcc-gcc")
-        clustcc_spec = concretize_one(query_spec)
-        PackageInstaller([clustcc_spec.package]).install()
-        return clustcc_spec
-
-
-def concretize_with_clustcc(specs: list[Spec]):
-    clustcc_spec = ensure_clustcc_gcc()
-    for s in specs:
-        # TODO: constrain(%[when=%c]c={clustcc_spec.format({name}/{hash})}clustcc-gcc/hash) ...
-        # Couldn't get the below working, would return unsat:
-        # clustcc_str_with_hash = clustcc_spec.format("{name}/{hash}")
-        # s.constrain(f"{s}%[when=%c virtuals=c deptypes=build]{clustcc_str_with_hash}")
-        # s.constrain(f"{s}%[when=%cxx virtuals=cxx deptypes=build]{clustcc_str_with_hash}")
-
-        s.add_dependency_edge(
-            Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("c",), when=Spec("%c")
-        )
-        s.add_dependency_edge(
-            Spec("clustcc-gcc"), depflag=dt.BUILD, virtuals=("cxx",), when=Spec("%cxx")
-        )
-    # TODO: Cache concretizations in source directories
-    to_concretize = [(s, None) for s in specs]
-    if len(to_concretize) == 1:
-        return [concretize_one(specs[0])]
-    else:    
-        return [concr for _, concr in concretize_separately(to_concretize)]
 
  
 

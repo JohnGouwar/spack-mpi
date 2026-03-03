@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 
 import mpi4py
 
+
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
 from mpi4py import MPI  # noqa: E402
@@ -17,9 +18,11 @@ from mpi4py import MPI  # noqa: E402
 try:
     from spack.extensions.mpi.constants import HEAD_RANK_ID, WorkerResponseTag
     from spack.extensions.mpi.task import RemoteCompilerResponse, RemoteCompilerTask
+    from spack.extensions.mpi.compile_commands import is_source
 except ImportError:
     from constants import HEAD_RANK_ID, WorkerResponseTag
     from task import RemoteCompilerResponse, RemoteCompilerTask
+    from mpi.compile_commands import is_source
 
 
 class ForkServer:
@@ -59,7 +62,7 @@ def normalize_cmd_args(args: list[str], td: str) -> tuple[str, str, str, list[st
     original_output_filename = None
     normalized_args = list(args)
     for i, arg in enumerate(args):
-        if arg.endswith(".c") or arg.endswith(".cc") or arg.endswith(".cpp"):
+        if is_source(arg):
             input_filename = Path(arg).name
             normalized_args[i] = os.path.join(td, input_filename)
         elif arg == "-o":

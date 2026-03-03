@@ -1,17 +1,14 @@
 import os
 from argparse import ArgumentParser
 from pathlib import Path
-import subprocess
 from multiprocessing import Event
-from epic import PosixMQ, PosixShm
+from epic import PosixMQ
 
-from mpi.constants import MQ_NAME
-from mpi.task import LocalCompilerTask, parse_task_from_message
 import mpi4py
 import spack.config
 from spack.cmd import parse_specs
 from spack.cmd.common import arguments
-from spack.spec import Spec
+from spack.spec import EMPTY_SPEC
 
 mpi4py.rc.initialize = False
 mpi4py.rc.finalize = False
@@ -28,7 +25,6 @@ try:
     from spack.extensions.mpi.head_rank import (
         run_local_compiler_task,
         start_head_rank,
-        concretize_with_clustcc
     )
     from spack.extensions.mpi.logs import setup_logging_queue, LoggingProcess
     from spack.extensions.mpi.worker_rank import ForkServer, MpiWorkerRank
@@ -38,14 +34,18 @@ try:
         gen_empty_config_file,
     )
     from spack.extensions.mpi.task import LocalCompilerTask, parse_task_from_message
+    from spack.extensions.mpi.concretize import concretize_with_clustcc
+    from spack.extensions.mpi.jsonl import read_specs_from_jsonl, write_specs_to_jsonl
 except ImportError as e:
     print(e)
     from constants import HEAD_NODE_LOGGER_NAME, DEFAULT_PORTFILE, MQ_NAME, MQ_DONE
-    from head_rank import run_local_compiler_task, start_head_rank, concretize_with_clustcc
+    from head_rank import run_local_compiler_task, start_head_rank
     from ..logs import setup_logging_queue, LoggingProcess
     from worker_rank import ForkServer, MpiWorkerRank
     from config import parse_config_file, gen_launch_files, gen_empty_config_file
     from task import LocalCompilerTask, parse_task_from_message
+    from concretize import concretize_with_clustcc
+    from jsonl import read_specs_from_jsonl, write_specs_to_jsonl
 
 level = "long"
 description = "distributed builds on a cluster"
@@ -93,7 +93,7 @@ def setup_parser(parser: ArgumentParser):
     )
     head_parser = subparsers.add_parser("head")
     arguments.add_common_arguments(head_parser, ["specs", "jobs"])
-    head_parser.add_argument("--spec-json", type=Path, help="Concretized spec to test")
+    head_parser.add_argument("--spec-jsonl", type=Path, help="Concretized spec to test")
     head_parser.add_argument(
         "--local-concurrent-tasks", help="Concurrent tasks running on head node"
     )
@@ -129,16 +129,20 @@ def clustcc(parser, args):
                     args=(args.local_concurrent_tasks, logging_queue, args.port_file, installer_start_event),
                     log_queue=logging_queue
                 ).start()
-                if args.spec_json is not None and args.spec_json.exists():
-                    with open(args.spec_json, "r") as f:
-                        spec = Spec.from_json(f)
-                    assert spec.concrete, "Must read concrete spec from json"
-                    logger.info(f'Read {spec} from {args.spec_json}')
-                    packages = [spec.package]
+                if args.spec_jsonl is not None and args.spec_jsonl.exists():
+                    packages = []
+                    spec_pairs = read_specs_from_jsonl(args.spec_jsonl)
+                    for (_, concrete) in spec_pairs:
+                        print(concrete, flush=True)
+                        if concrete != EMPTY_SPEC:
+                            packages.append(concrete.package)
                 else:
                     assert len(args.specs) > 0, "Must build at least one spec"
                     logger.info(f'Concretizing specs passed on the command line')
-                    concretized_specs = concretize_with_clustcc(parse_specs(args.specs))
+                    abstract_specs = parse_specs(args.specs)
+                    concretized_specs = concretize_with_clustcc(abstract_specs)
+                    if args.spec_jsonl is not None:
+                        write_specs_to_jsonl(abstract_specs, concretized_specs, args.spec_jsonl)
                     logger.info(f'Concretization finished')
                     packages = [c.package for c in concretized_specs]
                 if spack.config.get("config:installer", "old") == "new":
@@ -158,8 +162,8 @@ def clustcc(parser, args):
                     mq.send(MQ_DONE, 2)
                     mq.close()
 
-        except:
-            pass
+        except Exception as e:
+            raise e
     elif args.subcommand == "worker":
         forkserver = ForkServer()
         try:

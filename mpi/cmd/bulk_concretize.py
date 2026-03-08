@@ -27,6 +27,7 @@ def setup_parser(parser: ArgumentParser):
         type=Path,
         help="jsonl file to store concretization results (default: concretized.jsonl)"
     )
+    wrapper_mutex = parser.add_mutually_exclusive_group()
     parser.add_argument(
         "--add-clustcc",
         action="store_true",

@@ -63,7 +63,7 @@ def _orchestrate(args):
     handle = flux.Flux()
     total_cores = _get_total_cores(handle)
     max_single_node_cores = _get_max_node_cores(handle)
-    server_cores = min(max(1, args.server_core_percentage * total_cores // 100), max_single_node_cores)
+    server_cores = min(max(1, int(args.server_core_percentage) * total_cores // 100), max_single_node_cores)
     installer_cores = 1
     worker_cores = total_cores - server_cores - installer_cores
     assert worker_cores >= 1, "Not enough cores to spawn workers"
@@ -187,7 +187,7 @@ def setup_parser(parser: ArgumentParser):
     )
     install_parser.add_argument(
         "--server-core-percentage",
-        default=10,
+        default="10",
     )
 
 

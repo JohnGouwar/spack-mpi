@@ -107,6 +107,12 @@ def _orchestrate(args):
         server_hostname = fp.read()
     installer_spec.setattr("system.constraints", {"hostlist": [server_hostname]})
     installer_jid = flux.job.submit(handle, installer_spec)
+    flux.job.result(handle, installer_jid)
+    flux.job.cancel(handle, server_jid)
+    try:
+        flux.job.cancel(handle, worker_jid)
+    except:
+        flux.job.result(handle, worker_jid)
 
     
 def _concretize_or_read_jsonl(spec_jsonl: Optional[Path], spec_strs: list[str]) -> list[PackageBase]:

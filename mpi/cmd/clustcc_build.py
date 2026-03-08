@@ -61,13 +61,15 @@ def _get_max_node_cores(handle) -> int:
 def _orchestrate(args):
     assert "FLUX_URI" in os.environ, "Must orchestrate from within a flux instance"
     handle = flux.Flux()
+    flux_log_dir = Path(args.logging_prefix) / "flux"
+    flux_log_dir.mkdir(parents=True, exist_ok=True)
     total_cores = _get_total_cores(handle)
     max_single_node_cores = _get_max_node_cores(handle)
     server_cores = min(max(1, int(args.server_core_percentage) * total_cores // 100), max_single_node_cores)
     installer_cores = 1
     worker_cores = total_cores - server_cores - installer_cores
     assert worker_cores >= 1, "Not enough cores to spawn workers"
-    fifo_path = os.path.join(mkdtemp(), "clustcc_fifo")
+    fifo_path = os.path.join(str(Path(args.port_file).parent), "clustcc_fifo")
     os.mkfifo(fifo_path)
     common_args = [
         "--logging-level", args.logging_level,
@@ -87,6 +89,8 @@ def _orchestrate(args):
     server_spec.cwd = os.getcwd()
     server_spec.environment = dict(os.environ)
     server_spec.setattr_shell_option("cpu-affinity", "off")
+    server_spec.stdout = str(flux_log_dir / "server.out")
+    server_spec.stderr = str(flux_log_dir / "server.err")
     worker_spec = flux.job.JobspecV1.from_command(
         ["clustcc-worker"] + common_args,
         num_tasks=worker_cores,
@@ -94,6 +98,8 @@ def _orchestrate(args):
     )
     worker_spec.cwd = os.getcwd()
     worker_spec.environment = dict(os.environ)
+    worker_spec.stdout = str(flux_log_dir / "worker.out")
+    worker_spec.stderr = str(flux_log_dir / "worker.err")
     server_jid = flux.job.submit(handle, server_spec)
     worker_jid = flux.job.submit(handle, worker_spec)
     installer_spec = flux.job.JobspecV1.from_command(
@@ -103,6 +109,8 @@ def _orchestrate(args):
     )
     installer_spec.cwd = os.getcwd()
     installer_spec.environment = {**os.environ, _WORKER_ENV_VAR: "1"}
+    installer_spec.stdout = str(flux_log_dir / "installer.out")
+    installer_spec.stderr = str(flux_log_dir / "installer.err")
     with open(fifo_path, "r") as fp:
         server_hostname = fp.read()
     installer_spec.setattr("system.constraints", {"hostlist": [server_hostname]})

@@ -70,14 +70,13 @@ def _orchestrate(args):
     fifo_path = os.path.join(mkdtemp(), "clustcc_fifo")
     os.mkfifo(fifo_path)
     common_args = [
-        "clustcc",
         "--logging-level", args.logging_level,
         "--logging-prefix", args.logging_prefix,
         "--port-file", args.port_file,
     ]
     server_spec = flux.job.JobspecV1.from_command(
-        common_args + [
-            "head",
+        ["clustcc-head"] + common_args +
+        [
             "--local-concurrent-tasks", args.local_concurrent_tasks,
             "--signal-pipe", fifo_path
         ],
@@ -89,7 +88,7 @@ def _orchestrate(args):
     server_spec.environment = dict(os.environ)
     server_spec.setattr_shell_option("cpu-affinity", "off")
     worker_spec = flux.job.JobspecV1.from_command(
-        common_args + ["worker"],
+        ["clustcc-worker"] + common_args,
         num_tasks=worker_cores,
         cores_per_task=1
     )

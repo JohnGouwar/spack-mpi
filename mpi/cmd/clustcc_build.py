@@ -71,8 +71,8 @@ def _build_installer_command(worker_cores, installer_cores):
     for arg in sys.argv:
         if arg == "clustcc-build":
             final.append(arg)
-            final.append("j"+str(worker_cores))
-            final.append("p"+str(installer_cores))
+            final.append("-j"+str(worker_cores))
+            final.append("-p"+str(installer_cores))
         else:
             final.append(arg)
     return final
@@ -193,7 +193,6 @@ def setup_parser(parser: ArgumentParser):
     parser.add_argument(
         "--port-file",
         type=str,
-        required=True,
         help="File where port name will be published to link processes",
     )
     parser.add_argument(

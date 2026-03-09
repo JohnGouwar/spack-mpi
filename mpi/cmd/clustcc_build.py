@@ -54,7 +54,7 @@ def _ensure_flux():
 def _get_total_cores(handle):
     return flux.resource.ResourceSet(flux.kvs.get(handle, "resource.R")).ncores
 def _get_biggest(handle) -> tuple[str, int]:
-    R = flux.resource.ResourceSet()
+    R = flux.resource.ResourceSet(flux.kvs.get(handle, "resource.R"))
     biggest_host = ""
     biggest_cores = 0
     for r in R.ranks:

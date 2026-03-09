@@ -76,8 +76,8 @@ def _orchestrate(args):
     flux_log_dir.mkdir(parents=True, exist_ok=True)
     total_cores = _get_total_cores(handle)
     biggest_host, biggest_cores = _get_biggest(handle)
-    server_cores = min(1, biggest_cores * int(args.server_core_percentage) // 100)
-    installer_cores = min(1, biggest_cores * int(args.installer_core_percentage) // 100)
+    server_cores = max(1, biggest_cores * int(args.server_core_percentage) // 100)
+    installer_cores = max(1, biggest_cores * int(args.installer_core_percentage) // 100)
     assert server_cores + installer_cores <= biggest_cores
     worker_cores = total_cores - server_cores - installer_cores
     assert worker_cores >= 1, "Not enough cores to spawn workers"
@@ -113,21 +113,19 @@ def _orchestrate(args):
     worker_spec.environment = dict(os.environ)
     worker_spec.stdout = str(flux_log_dir / "worker.out")
     worker_spec.stderr = str(flux_log_dir / "worker.err")
-    server_jid = flux.job.submit(handle, server_spec)
-    worker_jid = flux.job.submit(handle, worker_spec)
     installer_spec = flux.job.JobspecV1.from_command(
         ["spack", "-j", str(worker_cores), "-p", str(installer_cores)] + sys.argv[1:],
         num_tasks=1,
         cores_per_task=installer_cores
     )
     installer_spec.cwd = os.getcwd()
-    installer_spec.environment = {**os.environ, _WORKER_ENV_VAR: "1"}
+    installer_spec.environment = {**os.environ, _WORKER_ENV_VAR: fifo_path}
     installer_spec.stdout = str(flux_log_dir / "installer.out")
     installer_spec.stderr = str(flux_log_dir / "installer.err")
     installer_spec.setattr("system.constraints", {"hostlist": [biggest_host]})
-    with open(fifo_path, "r") as fp:
-        fp.read()
+    server_jid = flux.job.submit(handle, server_spec)
     installer_jid = flux.job.submit(handle, installer_spec)
+    worker_jid = flux.job.submit(handle, worker_spec)
     try:
         flux.job.result(handle, installer_jid)
         flux.job.cancel(handle, server_jid)
@@ -224,9 +222,13 @@ def clustcc_build(parser, args):
     if args.subcommand == "install":
         _ensure_flux()
         if _is_worker():
+            fifo_path = os.environ.get(_WORKER_ENV_VAR)
+            assert fifo_path is not None
             packages = _concretize_or_read_jsonl(args.spec_jsonl, args.specs)
             installer = _get_installer_from_config()
             try:
+                with open(fifo_path, "r") as fp:
+                    fp.read()
                 installer(packages).install()
             except Exception as e:
                 raise e

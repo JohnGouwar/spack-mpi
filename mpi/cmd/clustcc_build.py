@@ -51,12 +51,23 @@ def _ensure_flux():
         ]
         os.execvp("srun", cmd)
 
-def _get_total_cores(handle) -> int:
+def _get_total_cores(handle):
     return flux.resource.ResourceSet(flux.kvs.get(handle, "resource.R")).ncores
+def _get_biggest(handle) -> tuple[str, int]:
+    R = flux.resource.ResourceSet()
+    biggest_host = ""
+    biggest_cores = 0
+    for r in R.ranks:
+        rank = R.copy_ranks(r)
+        host_name = str(rank.nodelist[0])
+        cores = rank.ncores
+        if cores > biggest_cores:
+            biggest_host = host_name
+            biggest_cores = cores
+    return biggest_host, biggest_cores
+            
+    
 
-def _get_max_node_cores(handle) -> int:
-    R = flux.resource.ResourceSet(flux.kvs.get(handle, "resource.R"))
-    return max(R.copy_ranks(r).ncores for r in R.ranks)
 
 def _orchestrate(args):
     assert "FLUX_URI" in os.environ, "Must orchestrate from within a flux instance"
@@ -64,9 +75,10 @@ def _orchestrate(args):
     flux_log_dir = Path(args.logging_prefix) / "flux"
     flux_log_dir.mkdir(parents=True, exist_ok=True)
     total_cores = _get_total_cores(handle)
-    max_single_node_cores = _get_max_node_cores(handle)
-    server_cores = min(max(1, int(args.server_core_percentage) * total_cores // 100), max_single_node_cores)
-    installer_cores = 1
+    biggest_host, biggest_cores = _get_biggest(handle)
+    server_cores = min(1, biggest_cores * int(args.server_core_percentage) // 100)
+    installer_cores = min(1, biggest_cores * int(args.installer_core_percentage) // 100)
+    assert server_cores + installer_cores <= biggest_cores
     worker_cores = total_cores - server_cores - installer_cores
     assert worker_cores >= 1, "Not enough cores to spawn workers"
     fifo_path = os.path.join(str(Path(args.port_file).parent), "clustcc_fifo")
@@ -79,7 +91,7 @@ def _orchestrate(args):
     server_spec = flux.job.JobspecV1.from_command(
         ["clustcc-head"] + common_args +
         [
-            "--local-concurrent-tasks", args.local_concurrent_tasks,
+            "--local-concurrent-tasks", str(server_cores),
             "--signal-pipe", fifo_path
         ],
         num_tasks=1,
@@ -91,6 +103,7 @@ def _orchestrate(args):
     server_spec.setattr_shell_option("cpu-affinity", "off")
     server_spec.stdout = str(flux_log_dir / "server.out")
     server_spec.stderr = str(flux_log_dir / "server.err")
+    server_spec.setattr("system.constraints", {"hostlist": [biggest_host]})
     worker_spec = flux.job.JobspecV1.from_command(
         ["clustcc-worker"] + common_args,
         num_tasks=worker_cores,
@@ -103,7 +116,7 @@ def _orchestrate(args):
     server_jid = flux.job.submit(handle, server_spec)
     worker_jid = flux.job.submit(handle, worker_spec)
     installer_spec = flux.job.JobspecV1.from_command(
-        sys.argv,
+        ["spack", "-j", str(worker_cores), "-p", str(installer_cores)] + sys.argv[1:],
         num_tasks=1,
         cores_per_task=installer_cores
     )
@@ -111,16 +124,21 @@ def _orchestrate(args):
     installer_spec.environment = {**os.environ, _WORKER_ENV_VAR: "1"}
     installer_spec.stdout = str(flux_log_dir / "installer.out")
     installer_spec.stderr = str(flux_log_dir / "installer.err")
+    installer_spec.setattr("system.constraints", {"hostlist": [biggest_host]})
     with open(fifo_path, "r") as fp:
-        server_hostname = fp.read()
-    installer_spec.setattr("system.constraints", {"hostlist": [server_hostname]})
+        fp.read()
     installer_jid = flux.job.submit(handle, installer_spec)
-    flux.job.result(handle, installer_jid)
-    flux.job.cancel(handle, server_jid)
     try:
+        flux.job.result(handle, installer_jid)
+        flux.job.cancel(handle, server_jid)
         flux.job.cancel(handle, worker_jid)
     except:
         flux.job.result(handle, worker_jid)
+    finally:
+        flux.job.cancel(handle, server_jid)
+        flux.job.cancel(handle, worker_jid)
+        flux.job.cancel(handle, installer_jid)
+        
 
     
 def _concretize_or_read_jsonl(spec_jsonl: Optional[Path], spec_strs: list[str]) -> list[PackageBase]:
@@ -170,11 +188,8 @@ def setup_parser(parser: ArgumentParser):
         help="Generate a slurm batch file rather than just a call to launch file",
     )
     install_parser = subparsers.add_parser("install")
-    arguments.add_common_arguments(install_parser, ["specs", "jobs"])
+    arguments.add_common_arguments(install_parser, ["specs", "jobs", "concurrent_packages"])
     install_parser.add_argument("--spec-jsonl", type=Path, help="Concretized spec to test")
-    install_parser.add_argument(
-        "--local-concurrent-tasks", default="1", help="Concurrent tasks running on head node"
-    )
     install_parser.add_argument(
         "--logging-level",
         choices=["debug", "warning", "error", "none"],
@@ -195,7 +210,13 @@ def setup_parser(parser: ArgumentParser):
     )
     install_parser.add_argument(
         "--server-core-percentage",
+        default="25",
+        help="Percentage of the largest allocated node used for the server"
+    )
+    install_parser.add_argument(
+        "--installer-core-percentage",
         default="10",
+        help="Percentage of the largest allocated node used for the installer"
     )
 
 

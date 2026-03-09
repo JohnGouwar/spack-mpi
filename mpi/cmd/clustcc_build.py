@@ -66,8 +66,16 @@ def _get_biggest(handle) -> tuple[str, int]:
             biggest_cores = cores
     return biggest_host, biggest_cores
             
-    
-
+def _build_installer_command(worker_cores, installer_cores):
+    final = []
+    for arg in sys.argv:
+        if arg == "clustcc-build":
+            final.append(arg)
+            final.append("j"+str(worker_cores))
+            final.append("p"+str(installer_cores))
+        else:
+            final.append(arg)
+    return final
 
 def _orchestrate(args):
     assert "FLUX_URI" in os.environ, "Must orchestrate from within a flux instance"
@@ -114,7 +122,7 @@ def _orchestrate(args):
     worker_spec.stdout = str(flux_log_dir / "worker.out")
     worker_spec.stderr = str(flux_log_dir / "worker.err")
     installer_spec = flux.job.JobspecV1.from_command(
-        ["spack", "-j", str(worker_cores), "-p", str(installer_cores)] + sys.argv[1:],
+        _build_installer_command(worker_cores, installer_cores),
         num_tasks=1,
         cores_per_task=installer_cores
     )
@@ -168,50 +176,32 @@ def setup_parser(parser: ArgumentParser):
     """
     Required method for configuring parser for spack command
     """
-    subparsers = parser.add_subparsers(dest="subcommand")
-    config_parser = subparsers.add_parser("config")
-    config_parser.add_argument(
-        "config_mode",
-        choices=["new", "scripts"],
-        help="Generate new config or generate scripts from existing config",
-    )
-    config_parser.add_argument(
-        "config_file",
-        help="Path to config json file, created if it does not exist",
-        type=Path,
-    )
-    config_parser.add_argument(
-        "--is-slurm",
-        action="store_true",
-        help="Generate a slurm batch file rather than just a call to launch file",
-    )
-    install_parser = subparsers.add_parser("install")
-    arguments.add_common_arguments(install_parser, ["specs", "jobs", "concurrent_packages"])
-    install_parser.add_argument("--spec-jsonl", type=Path, help="Concretized spec to test")
-    install_parser.add_argument(
+    arguments.add_common_arguments(parser, ["specs", "jobs", "concurrent_packages"])
+    parser.add_argument("--spec-jsonl", type=Path, help="Concretized spec to test")
+    parser.add_argument(
         "--logging-level",
         choices=["debug", "warning", "error", "none"],
         default="none",
         help="Level for debugging",
     )
-    install_parser.add_argument(
+    parser.add_argument(
         "--logging-prefix",
         type=str,
         default="logs/",
         help="Directory to store logs",
     )
-    install_parser.add_argument(
+    parser.add_argument(
         "--port-file",
         type=str,
         required=True,
         help="File where port name will be published to link processes",
     )
-    install_parser.add_argument(
+    parser.add_argument(
         "--server-core-percentage",
         default="25",
         help="Percentage of the largest allocated node used for the server"
     )
-    install_parser.add_argument(
+    parser.add_argument(
         "--installer-core-percentage",
         default="10",
         help="Percentage of the largest allocated node used for the installer"
@@ -219,31 +209,18 @@ def setup_parser(parser: ArgumentParser):
 
 
 def clustcc_build(parser, args):
-    if args.subcommand == "install":
-        _ensure_flux()
-        if _is_worker():
-            fifo_path = os.environ.get(_WORKER_ENV_VAR)
-            assert fifo_path is not None
-            packages = _concretize_or_read_jsonl(args.spec_jsonl, args.specs)
-            installer = _get_installer_from_config()
-            try:
-                with open(fifo_path, "r") as fp:
-                    fp.read()
-                installer(packages).install()
-            except Exception as e:
+    _ensure_flux()
+    if _is_worker():
+        fifo_path = os.environ.get(_WORKER_ENV_VAR)
+        assert fifo_path is not None
+        packages = _concretize_or_read_jsonl(args.spec_jsonl, args.specs)
+        installer = _get_installer_from_config()
+        try:
+            with open(fifo_path, "r") as fp:
+                fp.read()
+            os.unlink(fifo_path)
+            installer(packages).install()
+        except Exception as e:
                 raise e
-        else:
-            _orchestrate(args)
-    elif args.subcommand == "config":
-        if args.config_mode == "new":
-            gen_empty_config_file(args.config_file)
-            if args.config_file:
-                print(
-                    f"An empty config file has been generated at: {args.config_file.absolute()}"
-                )
-        else:
-            gen_launch_files(
-                parse_config_file(args.config_file),
-                Path(os.getcwd()),
-                is_slurm=args.is_slurm,
-            )
+    else:
+        _orchestrate(args)

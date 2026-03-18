@@ -2,6 +2,8 @@ from argparse import ArgumentParser
 from mpi.concretize import require_clustcc
 from spack.spec import Spec
 from pathlib import Path
+import tempfile
+import spack.store
 try:
     from spack.extensions.mpi.concretize import require_clustcc, best_effort_concretize
     from spack.extensions.mpi.jsonl import write_specs_to_jsonl
@@ -27,12 +29,24 @@ def setup_parser(parser: ArgumentParser):
         type=Path,
         help="jsonl file to store concretization results (default: concretized.jsonl)"
     )
-    wrapper_mutex = parser.add_mutually_exclusive_group()
     parser.add_argument(
         "--add-clustcc",
         action="store_true",
         help="Add clustcc to concretized specs"
     )
+    parser.add_argument(
+        "--empty-store",
+        action="store_true",
+        help="Concretize in an empty store"
+    )
+
+def _concretize(specs, add_clustcc: bool):
+    if add_clustcc:
+        with require_clustcc():
+            concretized = best_effort_concretize(specs)
+    else:
+        concretized = best_effort_concretize(specs)
+    return concretized
                 
 def bulk_concretize(parser, args):
     spec_file : Path = args.spec_file
@@ -42,10 +56,11 @@ def bulk_concretize(parser, args):
     output_file.parent.mkdir(exist_ok=True, parents=True)
     with open(spec_file, "r") as f:
         specs = [Spec(l) for l in f]
-    if args.add_clustcc:
-        with require_clustcc():
-            concretized = best_effort_concretize(specs)
+    if args.empty_store:
+        with tempfile.TemporaryDirectory() as td:
+            with spack.store.use_store(td):
+                concretized = _concretize(specs, args.add_clustcc)
     else:
-        concretized = best_effort_concretize(specs)
+        concretized = _concretize(specs, args.add_clustcc)
     write_specs_to_jsonl(specs, concretized, output_file)
     

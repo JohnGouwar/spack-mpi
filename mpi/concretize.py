@@ -8,10 +8,10 @@ import spack.config
 import spack.compilers.config
 import spack.repo
 import spack.util.parallel
-from typing import Optional
+from typing import Optional, Union
 import importlib
 from contextlib import contextmanager
-def _ensure_clustcc_gcc(query_spec: str | Spec | None = None) -> Spec:
+def _ensure_clustcc_gcc(query_spec: Optional[Union[str, Spec]] = None) -> Spec:
     if query_spec is None:
         query_spec = "clustcc-gcc"
     
@@ -28,18 +28,18 @@ def _ensure_clustcc_gcc(query_spec: str | Spec | None = None) -> Spec:
 
 
 @contextmanager
-def require_clustcc():
+def require_clustcc(clustcc_spec = None):
     requirements = {"all": {
         "require": "%[when=%c]c=clustcc-gcc %[when=%cxx]cxx=clustcc-gcc"
     }}
     try:
-        _ensure_clustcc_gcc()
+        _ensure_clustcc_gcc(clustcc_spec)
         with spack.config.override("packages", requirements) as c:
             yield c
     finally:
             pass
         
-def _best_effort_concr_task(packed_arguments: tuple[int, str]) -> tuple[int, Optional[Spec]]:
+def _best_effort_concr_task(packed_arguments: tuple[int, str]) -> tuple[int, Union[Spec, str]]:
     '''
     Forked concretization task that simply returns None for the spec on failure
     '''
@@ -52,8 +52,8 @@ def _best_effort_concr_task(packed_arguments: tuple[int, str]) -> tuple[int, Opt
         ):
             spec = concretize_one(Spec(spec_str), tests=False)
             return index, spec
-    except:
-        return index, None
+    except Exception as e:
+        return index, str(e)
 
     
 def best_effort_concretize(to_concretize: list[Spec]):
@@ -82,11 +82,11 @@ def best_effort_concretize(to_concretize: list[Spec]):
     for (i, concrete) in spack.util.parallel.imap_unordered(
             _best_effort_concr_task, args, processes=num_procs, maxtaskperchild=1
     ):
-        if concrete is not None:
+        if isinstance(concrete, Spec):
             tty.info(f"Successfully concretized {to_concretize[i]} to {concrete.format('{name}/{hash:7}')}")
             concrete_specs[i] = concrete
         else:
-            tty.info(f"Failed to concretize {to_concretize[i]}")
+            tty.info(f"Failed to concretize {to_concretize[i]} with exeception {concrete}")
     return concrete_specs
 
 def concretize_with_clustcc(specs: list[Spec]):

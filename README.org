@@ -1,45 +1,27 @@
 #+TITLE: spack-mpi: Distributed builds over MPI
 #+AUTHOR: John Gouwar
-
+* Overview
+A spack extension to drive builds with [[https:github.com/JohnGouwar/clustcc.git][clustcc]]. This is inteded for use on Slurm
+or Flux managed clusters.
 * Disclaimer
-This is a work in progress and not ready for production use.
-
+This is a ongoing research project and not yet supported for production use. 
 * Prerequisites
-The following software is required:
-- Python>=3.13 (this may work on older Python versions, but is developed on 3.13)
-- Spack>=1.0
 - [[https://www.github.com/JohnGouwar/spack-extension-packages][spack-extension-packages]] repository
-- MPI>=1.0 and a compatible ~mpi4py~
 - GCC>=11 
 
 The following Spack environment provides all necessary prerequisites:
 #+begin_src yaml :tangle env/spack.yaml
   spack:
-    config:
-      extensions:
-        - ../
     specs:
-    - 'python@3.12:'
+    - clustcc
     - clingo@spack
-    - 'clustcc-gcc ^gcc@11:'
-    - py-mpi4py
-    - py-epic-ipc
-    - mpich # or any other MPI implementation
-    - flux-sched # site may already provide flux
+    - flux-sched
     view: true
     concretizer:
       unify: true
     repos:
       extensions:
         git: 'https://github.com/JohnGouwar/spack-extension-packages.git'
-    toolchains:
-      clustcc_toochain:
-        - spec: '%c=clustcc-gcc'
-        - when: '%c'
-        - spec: '%cxx=clustcc-gcc'
-        - when: '%cxx'
-        - spec: '%fortran=gcc'
-        - when: '%fortran'
 #+end_src
 
 *You must activate this environment in the env/ subdirectory to run clustcc.*
@@ -52,93 +34,55 @@ want to use, replace the ~git~ entry above with the equivalent of:
       extensions: /path/to/your/spack-extension-packages/spack_repo/extensions
 #+end_src
 
-* clustcc Usage
-~clustcc~ can be used to generate both configuration and run scripts.
-
-** Configuration
-~clustcc~ uses flux as its backing scheduler to enable heterogeneous MPI
-deployment, and thus requires a small amount of script scaffolding, described
-here, to work effectively.
-
-*** Generate and customize the configuration script
-Run the following command to generate a skeleton of a JSON configuration script
-at ~CONFIG_FILENAME~.
-
+* Running clustcc-build
+** Running under Flux
+~clustcc-build~ is designed to run under a Flux allocation, either locally with
+~flux start -s N~ or using ~flux alloc~. A example script:
 #+begin_src shell
-spack clustcc config new CONFIG_FILENAME
+  #!/bin/bash
+  ENV_PATH=/path/to/env
+  export SPACK_PYTHON="$ENV_PATH/.spack-env/view/bin/python"
+  . /path/to/spack/share/spack/setup-env.sh
+  spack env activate $ENV_PATH
+  spack -c config:installer:new clustcc-build \
+  --installer-core-percentage 25\
+  --server-core-percentage 25\
+  --port-file port.txt \
+  --logging-level debug \
+  --logging-prefix logs \
+  <SPECS>
 #+end_src
-
-The resulting JSON file contains the ~clustcc~ options:
-
-#+begin_src json
-  {
-      "slurm_partition" : "partition", // name of slurm partition, "" if not using slurm
-      "slurm_pmi" : "pmi2", // slurm pmi implementation, "" if not using slurm
-      "slurm_time": "1:00:00", // time for slurm allocation, "" if not using slurm
-      "slurm_batch_file": "clustcc.sbatch", // generated slurm batch file, "" if not using slurm
-      "launch_file": "launch.sh", // generated flux launch file
-      "total_cpus": 2, // total cpus across whole allocation
-      "flux_exe": "/path/to/flux", // just flux if flux in PATH
-      "spack_exe": "/path/to/spack/bin/spack", // just spack if spack in PATH
-      "spack_env": "/path/to/spack-mpi/env",  // path to env root with spack.yaml
-      "port_file": "/path/to/file/publishing/port.txt", // head rank writes port name
-      // communication with this port, must be visible to all ranks (i.e. shared filesystem)
-      "specs": "zlib%clustcc hdf5%clustcc" // specs to be installed with clustcc
-      "num_workers": 1 // number of worker ranks
-      "head_rank_cpus": 1, // number of cpus allocated to the head rank
-      "head_rank_tasks": 1, // number of concurrent compilation tasks directly
-      // executed by the head rank
-      "worker_rank_cpus": 1,// number of cpus allocated to each worker rank
-      "logging_level": "debug", // acceptable values: none, debug, error, warning
-      "logging_prefix": "/path/to/directory/where/logs/stored"
-  }
-#+end_src
-
-Replace the values of paths and other options as needed.
-
-** Generate run scripts
-Once you customize the configuration file ~CONFIG_FILENAME~, generate custom run
-script(s) by executing:
-
+~clustcc-build~ utilizes all cores in the
+allocation. ~--installer-core-percentage~ and ~--server-core-percentage~ control
+how many cores on the largest node in the allocation the installer and server
+are allocated, respectively. The number of cores allocated to the installer
+corresponds to the maximum number of concurrent packages that can be built,
+while the number of cores allocated to the server corresponds to the number of
+concurrent local tasks that the server can run (/i.e./, preprocessing, linking,
+and compilation retries from failures the worker nodes). All other cores are
+allocated to the workers. 
+** Running under slurm
+The following Slurm batch script can be run with ~sbatch~ to execute a build:
 #+begin_src shell
-spack clustcc config scripts CONFIG_FILENAME
+  #!/bin/bash
+  #SBATCH --job-name=build
+  #SBATCH --partition=<PARTITION>
+  #SBATCH --ntasks=<TASKS>
+  ENV_PATH=/path/to/env
+  export SPACK_PYTHON="$ENV_PATH/.spack-env/view/bin/python"
+  . /path/to/spack/share/spack/setup-env.sh
+  spack env activate $ENV_PATH
+  spack -c config:installer:new clustcc-build \
+        --installer-core-percentage 25\
+        --server-core-percentage 25\
+        --port-file port.txt \
+        --logging-level debug \
+        --logging-prefix logs \
+        <SPECS>
 #+end_src
-
-One or more scripts will be generated based on your options.
-
-*** Using SLURM
-It should be sufficient to run the generated slurm script:
-
-#+begin_src shell
-sbatch SLURM_BATCH_FILE
-#+end_src
-
-where the actual script name is the value of ~slurm_batch_file~ in
-~CONFIG_FILENAME~.
-
-*** Using Flux
-It should be sufficient to run the generated launch script:
-
-#+begin_src shell
-flux batch [OPTIONS] LAUNCH_FILE
-#+end_src
-
-where the actual script name is the value of ~launch_file~ in
-~CONFIG_FILENAME~.
-
-* Testing clustcc
-You can use the provided ~run.sh~ script for debugging. It runs MPI locally.
-
-*You will first want to customize the PORT_FILE path.*
-
-The following packages are useful:
-- ~simple-c-package~ (great smoke test)
-- ~zlib%clustcc_toolchain and ^gmake%clustcc_toolchain~ (nice integration test)
-
-* TODOs
-- I would like to move to the new installer
-- I have some linking ideas, but those are on the back burner.
-- At some point I should introduce ccache, but that shouldn't be to hard.
+Notice that this is exactly the same script as run under Flux. ~clutcc-build~ is
+able to bootstrap a Flux allocation from a slurm allocation, and can be run exactly
+the same under each (modulo providing ~#SBATCH~ directives for the Slurm allocation).
 # Local Variables:
 # eval: (add-hook 'after-save-hook 'john/org-tangle-with-prompt nil t)
 # End:

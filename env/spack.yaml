@@ -1,26 +1,11 @@
 spack:
-  config:
-    extensions:
-      - ../
   specs:
-  - 'python@3.12:'
+  - clustcc
   - clingo@spack
-  - 'clustcc-gcc ^gcc@11:'
-  - py-mpi4py
-  - py-epic-ipc
-  - mpich # or any other MPI implementation
-  - flux-sched # site may already provide flux
+  - flux-sched
   view: true
   concretizer:
     unify: true
   repos:
     extensions:
       git: 'https://github.com/JohnGouwar/spack-extension-packages.git'
-  toolchains:
-    clustcc_toochain:
-      - spec: '%c=clustcc-gcc'
-      - when: '%c'
-      - spec: '%cxx=clustcc-gcc'
-      - when: '%cxx'
-      - spec: '%fortran=gcc'
-      - when: '%fortran'

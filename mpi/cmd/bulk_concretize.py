@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from mpi.concretize import require_clustcc
+from typing import Optional
 from spack.spec import Spec
 from pathlib import Path
 import tempfile
@@ -31,8 +32,8 @@ def setup_parser(parser: ArgumentParser):
     )
     parser.add_argument(
         "--add-clustcc",
-        action="store_true",
-        help="Add clustcc to concretized specs"
+        type=str,
+        help="Add clustcc to concretized specs, provide the clustcc spec"
     )
     parser.add_argument(
         "--empty-store",
@@ -40,9 +41,9 @@ def setup_parser(parser: ArgumentParser):
         help="Concretize in an empty store"
     )
 
-def _concretize(specs, add_clustcc: bool):
+def _concretize(specs, add_clustcc: Optional[str]):
     if add_clustcc:
-        with require_clustcc():
+        with require_clustcc(add_clustcc):
             concretized = best_effort_concretize(specs)
     else:
         concretized = best_effort_concretize(specs)

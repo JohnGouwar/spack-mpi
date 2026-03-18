@@ -1,7 +1,5 @@
 from argparse import ArgumentParser
 from pathlib import Path
-from subprocess import Popen
-from tempfile import mkdtemp
 from typing import Optional
 
 import flux
@@ -18,17 +16,13 @@ from spack.cmd.common import arguments
 from spack.package_base import PackageBase
 from spack.spec import EMPTY_SPEC
 try:
-    from spack.extensions.mpi.config import (
-        parse_config_file,
-        gen_launch_files,
-        gen_empty_config_file,
-    )
     from spack.extensions.mpi.concretize import concretize_with_clustcc
     from spack.extensions.mpi.jsonl import read_specs_from_jsonl, write_specs_to_jsonl
+    from spack.extensions.mpi.flux_utils import get_total_cores, get_biggest_host, ensure_flux, create_clustcc_head_jobspec, create_clustcc_worker_jobspec
 except ImportError as e:
-    from config import parse_config_file, gen_launch_files, gen_empty_config_file
     from concretize import concretize_with_clustcc
     from jsonl import read_specs_from_jsonl, write_specs_to_jsonl
+    from flux_utils import get_total_cores, get_biggest_host, ensure_flux, create_clustcc_head_jobspec, create_clustcc_worker_jobspec
 
 level = "long"
 description = "distributed builds on a cluster"
@@ -37,34 +31,6 @@ section = "build packages"
 _WORKER_ENV_VAR = "SPACK_CLUSTCC_INSTALL_WORKER"
 def _is_worker() -> bool:
     return _WORKER_ENV_VAR in os.environ
-def _ensure_flux():
-    if "FLUX_URI" not in os.environ:
-        nnodes = os.environ.get("SLURM_NNODES")
-        if nnodes is None:
-            msg = (
-                "SLURM_NNODES and FLUX_URI environment variables are not present, "
-                "spack clustcc-build must be run under either a slurm or flux allocation"
-            )
-            raise Exception(msg)
-        cmd = [
-            "srun", f"-N{nnodes}", f"-n{nnodes}", "flux", "start", *sys.argv
-        ]
-        os.execvp("srun", cmd)
-
-def _get_total_cores(handle):
-    return flux.resource.ResourceSet(flux.kvs.get(handle, "resource.R")).ncores
-def _get_biggest(handle) -> tuple[str, int]:
-    R = flux.resource.ResourceSet(flux.kvs.get(handle, "resource.R"))
-    biggest_host = ""
-    biggest_cores = 0
-    for r in R.ranks:
-        rank = R.copy_ranks(r)
-        host_name = str(rank.nodelist[0])
-        cores = rank.ncores
-        if cores > biggest_cores:
-            biggest_host = host_name
-            biggest_cores = cores
-    return biggest_host, biggest_cores
             
 def _build_installer_command(worker_cores, installer_cores):
     final = []
@@ -80,47 +46,30 @@ def _build_installer_command(worker_cores, installer_cores):
 def _orchestrate(args):
     assert "FLUX_URI" in os.environ, "Must orchestrate from within a flux instance"
     handle = flux.Flux()
-    flux_log_dir = Path(args.logging_prefix) / "flux"
-    flux_log_dir.mkdir(parents=True, exist_ok=True)
-    total_cores = _get_total_cores(handle)
-    biggest_host, biggest_cores = _get_biggest(handle)
+    total_cores = get_total_cores(handle)
+    biggest_host, biggest_cores = get_biggest_host(handle)
     server_cores = max(1, biggest_cores * int(args.server_core_percentage) // 100)
     installer_cores = max(1, biggest_cores * int(args.installer_core_percentage) // 100)
     assert server_cores + installer_cores <= biggest_cores
     worker_cores = total_cores - server_cores - installer_cores
     assert worker_cores >= 1, "Not enough cores to spawn workers"
-    fifo_path = os.path.join(str(Path(args.port_file).parent), "clustcc_fifo")
+    fifo_path = str(Path(args.port_file).parent / "clustcc_fifo")
     os.mkfifo(fifo_path)
-    common_args = [
-        "--logging-level", args.logging_level,
-        "--logging-prefix", args.logging_prefix,
-        "--port-file", args.port_file,
-    ]
-    server_spec = flux.job.JobspecV1.from_command(
-        ["clustcc-head"] + common_args +
-        [
-            "--local-concurrent-tasks", str(server_cores),
-            "--signal-pipe", fifo_path
-        ],
-        num_tasks=1,
-        cores_per_task=server_cores,
-        num_nodes=1,
+    Path(args.logging_prefix).mkdir(parents=True, exist_ok=True)
+    server_spec = create_clustcc_head_jobspec(
+        server_cores=server_cores,
+        logging_level=args.logging_level,
+        logging_prefix=args.logging_prefix,
+        port_file=args.port_file,
+        fifo_path=fifo_path,
+        hostname=biggest_host
     )
-    server_spec.cwd = os.getcwd()
-    server_spec.environment = dict(os.environ)
-    server_spec.setattr_shell_option("cpu-affinity", "off")
-    server_spec.stdout = str(flux_log_dir / "server.out")
-    server_spec.stderr = str(flux_log_dir / "server.err")
-    server_spec.setattr("system.constraints", {"hostlist": [biggest_host]})
-    worker_spec = flux.job.JobspecV1.from_command(
-        ["clustcc-worker"] + common_args,
-        num_tasks=worker_cores,
-        cores_per_task=1
+    worker_spec = create_clustcc_worker_jobspec(
+        worker_cores=worker_cores,
+        logging_level=args.logging_level,
+        logging_prefix=args.logging_prefix,
+        port_file=args.port_file,
     )
-    worker_spec.cwd = os.getcwd()
-    worker_spec.environment = dict(os.environ)
-    worker_spec.stdout = str(flux_log_dir / "worker.out")
-    worker_spec.stderr = str(flux_log_dir / "worker.err")
     installer_spec = flux.job.JobspecV1.from_command(
         _build_installer_command(worker_cores, installer_cores),
         num_tasks=1,
@@ -128,23 +77,15 @@ def _orchestrate(args):
     )
     installer_spec.cwd = os.getcwd()
     installer_spec.environment = {**os.environ, _WORKER_ENV_VAR: fifo_path}
-    installer_spec.stdout = str(flux_log_dir / "installer.out")
-    installer_spec.stderr = str(flux_log_dir / "installer.err")
+    installer_spec.stdout = os.path.join(args.logging_prefix, "installer.out")
+    installer_spec.stderr = os.path.join(args.logging_prefix, "installer.err")
     installer_spec.setattr("system.constraints", {"hostlist": [biggest_host]})
     server_jid = flux.job.submit(handle, server_spec)
     installer_jid = flux.job.submit(handle, installer_spec)
     worker_jid = flux.job.submit(handle, worker_spec)
-    try:
-        flux.job.result(handle, installer_jid)
-        flux.job.cancel(handle, server_jid)
-        flux.job.cancel(handle, worker_jid)
-    except:
-        flux.job.result(handle, worker_jid)
-    finally:
-        flux.job.cancel(handle, server_jid)
-        flux.job.cancel(handle, worker_jid)
-        flux.job.cancel(handle, installer_jid)
-        
+    flux.job.result(handle, installer_jid)
+    flux.job.cancel(handle, server_jid)
+    flux.job.cancel(handle, worker_jid)
 
     
 def _concretize_or_read_jsonl(spec_jsonl: Optional[Path], spec_strs: list[str]) -> list[PackageBase]:
@@ -208,7 +149,7 @@ def setup_parser(parser: ArgumentParser):
 
 
 def clustcc_build(parser, args):
-    _ensure_flux()
+    ensure_flux()
     if _is_worker():
         fifo_path = os.environ.get(_WORKER_ENV_VAR)
         assert fifo_path is not None
@@ -221,5 +162,9 @@ def clustcc_build(parser, args):
             installer(packages).install()
         except Exception as e:
                 raise e
+        finally:
+            if os.path.exists(args.port_file):
+                os.remove(args.port_file)
+                
     else:
         _orchestrate(args)

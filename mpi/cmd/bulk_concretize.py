@@ -1,5 +1,4 @@
 from argparse import ArgumentParser
-from mpi.concretize import require_clustcc
 from typing import Optional
 from spack.spec import Spec
 from pathlib import Path

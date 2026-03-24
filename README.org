@@ -12,6 +12,9 @@ This is a ongoing research project and not yet supported for production use.
 The following Spack environment provides all necessary prerequisites:
 #+begin_src yaml :tangle env/spack.yaml
   spack:
+    config:
+      extensions:
+        - /path/to/spack-mpi
     specs:
     - clustcc
     - clingo@spack

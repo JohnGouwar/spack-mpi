@@ -1,4 +1,7 @@
 spack:
+  config:
+    extensions:
+      - /path/to/spack-mpi
   specs:
   - clustcc
   - clingo@spack

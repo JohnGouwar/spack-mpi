@@ -76,8 +76,8 @@ The following Slurm batch script can be run with ~sbatch~ to execute a build:
   . /path/to/spack/share/spack/setup-env.sh
   spack env activate $ENV_PATH
   spack -c config:installer:new clustcc-build \
-        --installer-core-percentage 25\
-        --server-core-percentage 25\
+        --installer-core-percentage 25 \
+        --server-core-percentage 25 \
         --port-file port.txt \
         --logging-level debug \
         --logging-prefix logs \

@@ -48,8 +48,8 @@ want to use, replace the ~git~ entry above with the equivalent of:
   . /path/to/spack/share/spack/setup-env.sh
   spack env activate $ENV_PATH
   spack -c config:installer:new clustcc-build \
-  --installer-core-percentage 25\
-  --server-core-percentage 25\
+  --installer-core-percentage 25 \
+  --server-core-percentage 25 \
   --port-file port.txt \
   --logging-level debug \
   --logging-prefix logs \

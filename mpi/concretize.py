@@ -1,5 +1,7 @@
 from spack.spec import EMPTY_SPEC, Spec
-from spack.concretize import concretize_one, concretize_separately
+from spack.traverse import traverse_nodes
+from spack.concretize import  concretize_one, concretize_separately
+from spack.solver.reuse import SpecFilter, SpecFiltersFactory
 from spack.installer import PackageInstaller
 import spack.llnl.util.tty as tty
 from spack.bootstrap import ensure_bootstrap_configuration, ensure_clingo_importable_or_raise
@@ -29,40 +31,56 @@ def _ensure_clustcc_gcc(query_spec: Optional[Union[str, Spec]] = None) -> Spec:
 
 @contextmanager
 def require_clustcc(clustcc_spec = None):
-    requirements = {"all": {
-        "require": "%[when=%c]c=clustcc-gcc %[when=%cxx]cxx=clustcc-gcc"
-    }}
+    preferences = {
+        "c" : {
+            "prefer": ["clustcc-gcc"],
+        }, 
+        "cxx" : {
+            "prefer": ["clustcc-gcc"]
+        }
+    }
+    mixing = { "compiler_mixing" : ['clustcc-gcc', 'clustcc-client']}
     try:
         _ensure_clustcc_gcc(clustcc_spec)
-        with spack.config.override("packages", requirements) as c:
-            yield c
+        with spack.config.override("packages", preferences):
+            with spack.config.override("concretizer", mixing) as c:
+                yield c
     finally:
             pass
-        
-def _best_effort_concr_task(packed_arguments: tuple[int, str]) -> tuple[int, Union[Spec, str]]:
+
+def factory_from_specs(root_specs: list[Spec]) -> SpecFiltersFactory:
+    def inner(is_useable, config):
+        specs = list(
+            traverse_nodes(root_specs, deptype=("build", "link", "run"))
+        )
+        return [SpecFilter(lambda: specs, is_useable, include=[], exclude=[])]
+    return inner
+
+def _best_effort_concr_task(packed_arguments: tuple[int, str, list[Spec]]) -> tuple[int, Union[Spec, str]]:
     '''
     Forked concretization task that simply returns None for the spec on failure
     '''
-    index, spec_str = packed_arguments
+    index, spec_str, reuseable_specs = packed_arguments
+    factory = factory_from_specs(reuseable_specs)
     try:
         with tty.SuppressOutput(
                 error_enabled=False,
                 msg_enabled=False,
                 warn_enabled=False
         ):
-            spec = concretize_one(Spec(spec_str), tests=False)
+            spec = concretize_one(Spec(spec_str), tests=False, factory=factory)
             return index, spec
     except Exception as e:
         return index, str(e)
 
     
-def best_effort_concretize(to_concretize: list[Spec]):
+def best_effort_concretize(to_concretize: list[Spec], specs_to_reuse: list[Spec]):
     '''
     This is a best-effort reimplementation of `spack.concretize.concretize_separately`
     where we also return specs that fail to concretize
     '''
     args = [
-      (i, str(abstract))
+      (i, str(abstract), specs_to_reuse)
       for i, abstract in enumerate(to_concretize)
     ]
     if len(args) == 0:

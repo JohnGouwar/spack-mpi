@@ -30,21 +30,65 @@ def _ensure_clustcc_gcc(query_spec: Optional[Union[str, Spec]] = None) -> Spec:
 
 
 @contextmanager
-def require_clustcc(clustcc_spec = None):
-    preferences = {
-        "c" : {
-            "prefer": ["clustcc-gcc"],
-        }, 
-        "cxx" : {
-            "prefer": ["clustcc-gcc"]
-        }
-    }
-    mixing = { "compiler_mixing" : ['clustcc-gcc', 'clustcc-client']}
+def require_clustcc(clustcc_gcc_abstract_spec = None):
     try:
-        _ensure_clustcc_gcc(clustcc_spec)
-        with spack.config.override("packages", preferences):
-            with spack.config.override("concretizer", mixing) as c:
-                yield c
+        clustcc_gcc_concrete_spec = _ensure_clustcc_gcc(clustcc_gcc_abstract_spec)
+        clustcc_prefix = clustcc_gcc_concrete_spec.prefix
+        gcc_spec = clustcc_gcc_concrete_spec['gcc']
+        gcc_prefix = gcc_spec.prefix
+        clustcc_client_spec = clustcc_gcc_concrete_spec['clustcc-client']
+        packages_config = {
+            "clustcc-gcc" : {
+                "externals" : [
+                    {
+                        "spec" : f"clustcc-gcc@{clustcc_gcc_concrete_spec.versions}",
+                        "prefix" : f"{clustcc_prefix}",
+                        "extra_attributes" : {
+                            "compilers" : {
+                                "c": f"{clustcc_prefix.bin.cc}",
+                                "cxx": f"{clustcc_prefix.bin.join('c++')}",
+                            }
+                        },
+                        "dependencies" : [
+                            # { "id": "client_id", "deptypes": "run" },
+                            { "id": "gcc_id", "deptypes": "run" },
+                        ]
+                    }
+                ]
+            },
+            "gcc" : {
+                "externals" : [
+                    {
+                        "spec" : f"gcc@{gcc_spec.versions} languages='c,c++,fortran'",
+                        "prefix" : f"{gcc_prefix}",
+                        "id" : "gcc_id",
+                        "extra_attributes" : {
+                            "compilers" : {
+                                "c": f"{gcc_prefix.bin.gcc}",
+                                "cxx": f"{gcc_prefix.bin.join('g++')}",
+                                "fortran": f"{gcc_prefix.bin.gfortran}",
+                            }
+                        },
+                    }
+                ]
+            },
+            # TODO: Find spack bug for why this isn't parsed as external
+            # "clustcc-client": {
+            #     "externals" : [
+            #         {
+            #             "spec" : "clustcc-client@=1.0",
+            #             "prefix": f"{clustcc_client_spec.prefix}",
+            #             "id": "client_id"
+            #         }
+            #     ]
+            # },
+            "c" : { "require" : ['clustcc-gcc'], "buildable": False },
+            "cxx" : { "require" : ['clustcc-gcc'], "buildable": False }
+        }
+        with spack.config.override("packages", packages_config) as c:
+            yield c
+    except Exception as e:
+        raise e
     finally:
             pass
 

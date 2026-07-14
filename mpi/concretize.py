@@ -3,14 +3,14 @@ from spack.traverse import traverse_nodes
 from spack.concretize import  concretize_one, concretize_separately
 from spack.solver.reuse import SpecFilter, SpecFiltersFactory
 from spack.installer import PackageInstaller
-import spack.llnl.util.tty as tty
+import spack.util.tty as tty
 from spack.bootstrap import ensure_bootstrap_configuration, ensure_clingo_importable_or_raise
 import spack.store
 import spack.config
 import spack.compilers.config
 import spack.repo
 import spack.util.parallel
-from typing import Optional, Union
+from typing import Optional, Union, cast
 import importlib
 from contextlib import contextmanager
 def _ensure_clustcc_gcc(query_spec: Optional[Union[str, Spec]] = None) -> Spec:
@@ -50,7 +50,7 @@ def require_clustcc(clustcc_gcc_abstract_spec = None):
                             }
                         },
                         "dependencies" : [
-                            # { "id": "client_id", "deptypes": "run" },
+                            { "id": "client_id", "deptypes": "run" },
                             { "id": "gcc_id", "deptypes": "run" },
                         ]
                     }
@@ -72,16 +72,15 @@ def require_clustcc(clustcc_gcc_abstract_spec = None):
                     }
                 ]
             },
-            # TODO: Find spack bug for why this isn't parsed as external
-            # "clustcc-client": {
-            #     "externals" : [
-            #         {
-            #             "spec" : "clustcc-client@=1.0",
-            #             "prefix": f"{clustcc_client_spec.prefix}",
-            #             "id": "client_id"
-            #         }
-            #     ]
-            # },
+            "clustcc-client": {
+                "externals" : [
+                    {
+                        "spec" : "clustcc-client@1.0",
+                        "prefix": f"{clustcc_client_spec.prefix}",
+                        "id": "client_id"
+                    }
+                ]
+            },
             "c" : { "require" : ['clustcc-gcc'], "buildable": False },
             "cxx" : { "require" : ['clustcc-gcc'], "buildable": False }
         }
@@ -140,7 +139,7 @@ def best_effort_concretize(to_concretize: list[Spec], specs_to_reuse: list[Spec]
     _ = spack.repo.PATH.provider_index
     _ = spack.compilers.config.all_compilers()
     num_procs = min(len(args), spack.config.determine_number_of_jobs(parallel=True))
-    concrete_specs = [EMPTY_SPEC for _ in to_concretize]
+    concrete_specs = [cast(Optional[Spec], None) for _ in to_concretize]
     for (i, concrete) in spack.util.parallel.imap_unordered(
             _best_effort_concr_task, args, processes=num_procs, maxtaskperchild=1
     ):
@@ -151,8 +150,8 @@ def best_effort_concretize(to_concretize: list[Spec], specs_to_reuse: list[Spec]
             tty.info(f"Failed to concretize {to_concretize[i]} with exeception {concrete}")
     return concrete_specs
 
-def concretize_with_clustcc(specs: list[Spec]):
-    with require_clustcc():
+def concretize_with_clustcc(specs: list[Spec], clustcc_spec: Optional[Spec] = None):
+    with require_clustcc(clustcc_spec):
         to_concretize = [(s, None) for s in specs]
         if len(to_concretize) == 1:
             return [concretize_one(specs[0])]

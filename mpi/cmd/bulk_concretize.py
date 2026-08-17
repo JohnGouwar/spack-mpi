@@ -52,6 +52,8 @@ def _concretize(specs, add_clustcc: Optional[str], already_concretized: list[Spe
 
                 
 def bulk_concretize(parser, args):
+    import multiprocessing
+    multiprocessing.set_start_method("fork")
     output_file : Path = args.output_file
     assert output_file.name.endswith(".jsonl"), "Output must be in jsonl format"
     output_file.parent.mkdir(exist_ok=True, parents=True)

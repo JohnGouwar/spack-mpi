@@ -84,7 +84,7 @@ def require_clustcc(clustcc_gcc_abstract_spec = None):
             "c" : { "require" : ['clustcc-gcc'], "buildable": False },
             "cxx" : { "require" : ['clustcc-gcc'], "buildable": False }
         }
-        with spack.config.override("packages", packages_config) as c:
+        with spack.config.CONFIG.override("packages", packages_config) as c:
             yield c
     except Exception as e:
         raise e
